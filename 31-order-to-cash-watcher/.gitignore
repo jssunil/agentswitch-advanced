@@ -1,0 +1,6 @@
+# never commit credentials or generated reports (they contain customer data)
+*.local
+.env
+.env.*
+reports/
+__pycache__/

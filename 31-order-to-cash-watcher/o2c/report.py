@@ -3,6 +3,7 @@
 The rules are pure functions over rows so they can be tested without the platform.
 """
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 
 IST = timezone(timedelta(hours=5, minutes=30))
 SUBMITTED = 1
@@ -10,6 +11,7 @@ CANCELLED = 2
 NOT_INVOICED = ("unbilled", "partially_invoiced")
 RECEIVABLE = "receivable"
 FIXTURE_MARKERS = ("test", "harness", "fixture")
+AGE_BUCKETS = ("0-7", "8-14", "15-30", "31-60", ">60")
 
 
 def today_ist():
@@ -72,13 +74,89 @@ def _as_date(value):
     return date.fromisoformat(str(value)[:10]) if value else None
 
 
+def validate_days(days):
+    """Reject invalid thresholds before a client or a report run is started."""
+    if isinstance(days, bool) or not isinstance(days, int) or days < 0:
+        raise ValueError("days must be a nonnegative integer")
+    return days
+
+
+def age_bucket(age_days):
+    """Order-date age bucket; negative/unknown ages are not bucketed."""
+    if age_days is None or age_days < 0:
+        return None
+    for maximum, label in zip((7, 14, 30, 60), AGE_BUCKETS):
+        if age_days <= maximum:
+            return label
+    return AGE_BUCKETS[-1]
+
+
+def _order_date(row):
+    try:
+        return _as_date(row.get("date"))
+    except (ValueError, TypeError):
+        return None
+
+
+def order_date_issues(orders, report_date):
+    """Unbilled submitted orders whose order dates cannot support an age check.
+
+    These are diagnostics, not additional exception rows or financial totals.
+    """
+    issues = []
+    for row in orders:
+        if row.get("docstatus") != SUBMITTED or row.get("invoiced_status") not in NOT_INVOICED:
+            continue
+        day = _order_date(row)
+        reason = None
+        if day is None:
+            reason = "missing order date" if not row.get("date") else "invalid order date"
+        elif day > report_date:
+            reason = "future order date"
+        if reason:
+            issues.append({"id": row.get("id"), "number": row.get("number"), "reason": reason})
+    return sorted(issues, key=lambda r: (str(r["number"] or ""), str(r["id"] or "")))
+
+
+def _order_sort_key(row):
+    """Oldest first, then currency group, then descending value within the group."""
+    currency = _code(row.get("currency"))
+    try:
+        amount = Decimal(str(row.get("grand_total")))
+        if not amount.is_finite():
+            amount = None
+    except InvalidOperation:
+        amount = None
+    return (-row["age_days"], currency is None, currency or "", amount is None,
+            amount.copy_negate() if amount is not None else Decimal(0), str(row.get("number") or ""), str(row.get("id") or ""))
+
+
+def sort_orders(rows):
+    """Sort again after currency resolution so fallback codes determine the groups too."""
+    return sorted(rows, key=_order_sort_key)
+
+
+def order_age_summary(rows):
+    counts = dict.fromkeys(AGE_BUCKETS, 0)
+    for row in rows:
+        bucket = age_bucket(row.get("age_days"))
+        if bucket is not None:
+            counts[bucket] += 1
+    return counts
+
+
 def orders_not_invoiced(orders, report_date, days):
-    """Submitted orders not (fully) invoiced more than `days` days after the order date."""
+    """Submitted orders not fully invoiced, strictly older than N by order date.
+
+    No verified deliverable-date field is agreed yet; delivery state is not used
+    to invent one. Invalid/missing/future dates are surfaced by order_date_issues.
+    """
+    validate_days(days)
     out = []
     for o in orders:
         if o.get("docstatus") != SUBMITTED or o.get("invoiced_status") not in NOT_INVOICED:
             continue
-        order_date = _as_date(o.get("date"))
+        order_date = _order_date(o)
         if order_date is None:
             continue
         age = (report_date - order_date).days
@@ -92,13 +170,16 @@ def orders_not_invoiced(orders, report_date, days):
             "company_id": o.get("company_id"),
             "order_date": order_date.isoformat(),
             "age_days": age,
+            "age_basis": "order_date",
+            "age_bucket": age_bucket(age),
+            "deliverability_status": "unverified",
             "invoiced_status": o.get("invoiced_status"),
             "delivered_status": o.get("delivered_status"),
             "grand_total": o.get("grand_total"),
             "currency": o.get("currency_code"),
             "fixture": looks_like_fixture(o),
         })
-    return sorted(out, key=lambda r: (-r["age_days"], r["number"] or ""))
+    return sort_orders(out)
 
 
 def payments_not_applied(payments, report_date):
@@ -174,6 +255,7 @@ def invoices_overdue(invoices, report_date):
 
 
 def build(client, report_date=None, days=7, instance=None, currencies=None):
+    validate_days(days)
     report_date = report_date or today_ist()
     sections = {}
     names = client.tool_names()
@@ -183,8 +265,16 @@ def build(client, report_date=None, days=7, instance=None, currencies=None):
     sections["orders_not_invoiced"] = {
         "status": "ok",
         "rule": f"submitted, invoiced_status in {list(NOT_INVOICED)}, order date more than {days} days ago",
-        "rows": apply_currency(orders_not_invoiced(orders, report_date, days), currencies),
+        "rows": sort_orders(apply_currency(orders_not_invoiced(orders, report_date, days), currencies)),
     }
+    order_section = sections["orders_not_invoiced"]
+    order_section.update(
+        age_basis="order_date",
+        deliverability_status="unverified",
+        unverified_deliverability_count=len(order_section["rows"]),
+        age_buckets=order_age_summary(order_section["rows"]),
+        date_issues=order_date_issues(orders, report_date),
+    )
 
     if "Invoice.list" in names:
         overdue, no_due = invoices_overdue(client.list_all("Invoice", {"docstatus": SUBMITTED}), report_date)
@@ -299,6 +389,21 @@ def to_markdown(report):
         if key == "invoices_overdue":
             lines += _invoice_tables(rows, sec.get("no_due_date", []))
             continue
+        if key == "orders_not_invoiced":
+            # Compute from canonical rows as well for reports built by older callers.
+            counts = order_age_summary(rows)
+            lines += ["Age basis: **order date**, not a verified deliverable date. "
+                      f"Deliverability unverified: **{len(rows)}** order(s), already included above; not an extra total.",
+                      "Oldest first; equal ages grouped by currency (unknown last), then value descending within each currency.",
+                      "Order-age buckets (exception rows only): "
+                      + "; ".join(f"{label}: {count}" for label, count in counts.items()) + ".",
+                      "The strict age > N filter still applies; buckets do not add younger orders.", ""]
+            issues = sec.get("date_issues", [])
+            if issues:
+                lines += [f"### Orders with unusable dates ({len(issues)})", "",
+                          "Excluded from age-based exception rows and bucket counts; review these date issues separately.", ""]
+                lines += [f"- {cell(r.get('number') or r.get('id') or '(unnamed order)')}: {cell(r['reason'])}" for r in issues]
+                lines += ["", "### Age-based exception rows", ""]
         if not rows:
             lines += ["None.", ""]
             continue

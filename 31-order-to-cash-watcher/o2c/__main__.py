@@ -14,6 +14,13 @@ from . import report
 from .client import Client
 
 
+def nonnegative_days(value):
+    try:
+        return report.validate_days(int(value))
+    except (ValueError, TypeError):
+        raise argparse.ArgumentTypeError("days must be a nonnegative integer") from None
+
+
 def write_report(rep, md, out, instance):
     """Write <instance>-<date>.json and .md as UTF-8, whatever the machine's default encoding.
 
@@ -29,7 +36,7 @@ def write_report(rep, md, out, instance):
 
 def main():
     ap = argparse.ArgumentParser(prog="o2c", description="Daily order-to-cash exception report (read-only)")
-    ap.add_argument("--days", type=int, default=int(os.environ.get("O2C_DAYS", 7)), help="N: days before an order counts as not invoiced")
+    ap.add_argument("--days", type=nonnegative_days, default=os.environ.get("O2C_DAYS", "7"), help="N: nonnegative days before an order counts as not invoiced")
     ap.add_argument("--date", type=date.fromisoformat, help="report date (default: today in IST)")
     ap.add_argument("--instance", default=os.environ.get("AGENTSWITCH_INSTANCE"), help="label for the report, e.g. suryodaya")
     ap.add_argument("--out", type=Path, help="folder to write <instance>-<date>.md and .json; prints Markdown if omitted")
@@ -40,6 +47,9 @@ def main():
     if args.out:
         stem = write_report(rep, md, args.out, args.instance)
         counts = ", ".join(f"{k}={len(v['rows'])}" if v["status"] == "ok" else f"{k}={v['status']}" for k, v in rep["sections"].items())
+        issues = rep["sections"]["orders_not_invoiced"].get("date_issues", [])
+        if issues:
+            counts += f", order_date_issues={len(issues)}"
         print(f"wrote {args.out / stem}.md ({counts})")
     else:
         print(md)

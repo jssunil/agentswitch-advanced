@@ -110,7 +110,8 @@ class MixedReport(unittest.TestCase):
             if not name.endswith(".list"):
                 raise AssertionError("Unexpected write: " + name)
             entity = name[:-5]
-            filtered = [r for r in data[entity] if all(r.get(k) == v for k, v in args.items() if k not in ("limit", "offset"))]
+            filtered = [r for r in data[entity] if all(r.get(k) == v for k, v in args.items() if k not in ("limit", "offset", "sort_by", "sort_order"))]
+            filtered.sort(key=lambda row: row[args["sort_by"]], reverse=args["sort_order"] == "desc")
             # One record per page, even though the client asks for up to 500.
             offset = args["offset"]
             return {"structuredContent": {"data": filtered[offset:offset + 1], "total": len(filtered)}}

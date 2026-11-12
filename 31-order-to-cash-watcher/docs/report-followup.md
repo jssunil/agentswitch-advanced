@@ -73,7 +73,7 @@ This is not a claim that every historical PR received a new full code review.
 
 ## Verification
 
-Run `python -m unittest discover -s tests -t . -v` in the seat folder. Tests are ordinary synthetic
+Run `python3 -m unittest discover -s tests -t . -v` in the seat folder. Tests are ordinary synthetic
 unit/CLI checks, not human-authored graded course tasks. They cover inherited behaviour, order
 threshold/bucket/currency sorting, pagination, strict values, mixed valid/malformed paginated data,
 output paths, Unicode/escaping, staged-write failures and replacement rollback.

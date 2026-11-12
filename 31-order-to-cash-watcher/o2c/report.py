@@ -324,7 +324,7 @@ def add_receipt_hints(rows, receipts, currencies=None):
     return rows
 
 
-def validated_receipts(receipts, issues):
+def validated_receipts(receipts, issues, quarantined_customers=None):
     """Keep #35's allocation logic, but don't let bad raw amounts become zero/NaN.
 
     Unusable financial child rows quarantine that receipt from the hint input.
@@ -364,6 +364,9 @@ def validated_receipts(receipts, issues):
             row["date"] = day.isoformat() if day else None
         if valid:
             out.append(row)
+        elif quarantined_customers is not None:
+            # None means attribution is unavailable: every customer's history may be incomplete.
+            quarantined_customers.add(raw.get("customer_id") or None)
     return out
 
 
@@ -463,13 +466,18 @@ def build(client, report_date=None, days=7, instance=None, currencies=None):
     if "PaymentReceived.list" in names:
         receipt_issues = []
         source_receipts = client.list_all("PaymentReceived")
-        add_receipt_hints(pay_rows, validated_receipts(source_receipts, receipt_issues), currencies)
-        if receipt_issues:
-            for row in pay_rows:
+        quarantined_customers = set()
+        add_receipt_hints(pay_rows, validated_receipts(source_receipts, receipt_issues, quarantined_customers), currencies)
+        for row in pay_rows:
+            affected = None in quarantined_customers or row.get("party_id") in quarantined_customers
+            row["receipt_history_coverage"] = "partial" if affected else "complete"
+            if affected:
                 if row.get("hint") == "no_history":
-                    # Excluded corrupt input is not evidence of absent history.
                     row["hint"] = "unknown"
-                    row["receipts_applied_total"] = None
+                # Known history remains useful, but its numeric total is not a complete total.
+                row["receipts_applied_total"] = None
+                for total in row.get("receipts_applied_by_currency", []):
+                    total["applied_total"] = None
         payment_issues.extend(receipt_issues)
         history = {"status": "ok", "source": "PaymentReceived (applied receipts), joined on customer",
                    "coverage": "partial" if receipt_issues else "complete", "data_issues": receipt_issues}
@@ -626,11 +634,13 @@ def to_markdown(report):
             lines += [f"**{sec['status'].upper()}:** {sec['reason']}", ""]
             continue
         lines += [f"Rule: {sec['rule']}.", ""]
-        if sec.get("data_issues"):
-            lines += [f"Data validation: **{len(sec['data_issues'])} issue(s)**; coverage is partial. "
+        display_issues = [r for r in sec.get("data_issues", [])
+                          if not (key == "orders_not_invoiced" and r.get("field") == "date")]
+        if display_issues:
+            lines += [f"Data validation: **{len(display_issues)} issue(s)**; coverage is partial. "
                       "Valid exceptions are retained; unknown values are not zero.", ""]
             lines += [f"- {cell(r.get('number') or r.get('id') or '(unnamed record)')}: "
-                      f"{cell(r['field'])}: {cell(r['reason'])}" for r in sec["data_issues"]]
+                      f"{cell(r['field'])}: {cell(r['reason'])}" for r in display_issues]
             lines.append("")
         if key == "invoices_overdue":
             lines += _invoice_tables(rows, sec.get("no_due_date", []))

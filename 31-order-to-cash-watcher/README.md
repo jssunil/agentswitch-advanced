@@ -22,8 +22,8 @@ See the top-level README. Put your agent code, tests and notes in this folder; o
 
 ```bash
 cd 31-order-to-cash-watcher
-python -m o2c --instance keystone --date 2026-11-15 --days 7 --out reports/
-python -m unittest discover -s tests -t . -v
+python3 -m o2c --instance keystone --date 2026-11-15 --days 7 --out reports/
+python3 -m unittest discover -s tests -t . -v
 ```
 
 The report reads `AGENTSWITCH_BASE_URL` and `AGENTSWITCH_TOKEN`. It never logs in or creates a

@@ -27,6 +27,10 @@ class PaginationError(McpError):
     """A list response cannot establish complete, consistent coverage."""
 
 
+
+class UnstablePaginationError(PaginationError):
+    """A changing source may succeed after a bounded full restart."""
+
 def is_read_tool(name):
     return name in READ_TOOLS or name.endswith(READ_SUFFIXES)
 
@@ -78,6 +82,15 @@ class Client:
         return result.get("structuredContent") or json.loads(result["content"][0]["text"])
 
     def list_all(self, entity, filters=None, max_pages=MAX_PAGES):
+        """Retry an unstable read twice from offset zero; never expose partial rows."""
+        for attempt in range(3):
+            try:
+                return self._list_all_once(entity, filters, max_pages)
+            except UnstablePaginationError:
+                if attempt == 2:
+                    raise
+
+    def _list_all_once(self, entity, filters=None, max_pages=MAX_PAGES):
         """Return rows only after all pages satisfy the advertised integer total.
 
         Every page must carry data and a consistent nonnegative total. Missing
@@ -95,14 +108,16 @@ class Client:
         expected_total = None
         seen_ids, seen_pages = set(), set()
 
-        def invalid(reason):
+        def invalid(reason, unstable=False):
             # Report protocol facts only; never include customer rows or tokens.
-            raise PaginationError(f"{entity}.list pagination incomplete: {reason}")
+            error = UnstablePaginationError if unstable else PaginationError
+            raise error(f"{entity}.list pagination incomplete: {reason}")
 
         for _ in range(max_pages):
             # The client owns paging. Caller-supplied filters cannot skip the
             # first records or override the page size through offset/limit.
-            page = self.call(f"{entity}.list", {**(filters or {}), "limit": PAGE_SIZE, "offset": offset})
+            page = self.call(f"{entity}.list", {**(filters or {}), "limit": PAGE_SIZE, "offset": offset,
+                                                     "sort_by": "id", "sort_order": "asc"})
             if not isinstance(page, dict):
                 invalid("response is not an object")
             data, total = page.get("data"), page.get("total")
@@ -116,9 +131,9 @@ class Client:
             if expected_total is None:
                 expected_total = total
             elif total != expected_total:
-                # The source may have changed while we read it. Require a rerun
+                # The source may have changed while we read it. Restart the whole read
                 # rather than combine pages with different advertised counts.
-                invalid("total changed during pagination")
+                invalid("total changed during pagination", unstable=True)
             if offset + len(data) > total:
                 invalid("returned row count exceeds total")
             if not data and offset < total:
@@ -131,7 +146,7 @@ class Client:
                 # retain only a digest rather than another copy of customer data.
                 fingerprint = hashlib.sha256(json.dumps(data, sort_keys=True).encode("utf-8")).digest()
                 if fingerprint in seen_pages:
-                    invalid("repeated page")
+                    invalid("repeated page", unstable=True)
                 seen_pages.add(fingerprint)
                 for row in data:
                     if row.get("id") is not None:
@@ -139,7 +154,7 @@ class Client:
                         # can inflate totals and conceal a record we never read.
                         record_id = json.dumps(row["id"], sort_keys=True)
                         if record_id in seen_ids:
-                            invalid("duplicate record id")
+                            invalid("duplicate record id", unstable=True)
                         seen_ids.add(record_id)
             # Accept a page only after all its checks pass. Advance by the actual
             # row count because a server may return less than the requested limit.

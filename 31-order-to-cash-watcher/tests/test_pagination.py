@@ -52,8 +52,8 @@ class Pagination(unittest.TestCase):
         pages = [{"data": rows("a", "b"), "total": 3}, {"data": rows("c"), "total": 3}]
         with patch("o2c.client.PAGE_SIZE", 2), patch.object(c, "call", side_effect=pages) as call:
             self.assertEqual(c.list_all("Invoice", {"docstatus": 1, "offset": 99, "limit": 99}), rows("a", "b", "c"))
-        self.assertEqual(call.call_args_list[0].args, ("Invoice.list", {"docstatus": 1, "offset": 0, "limit": 2}))
-        self.assertEqual(call.call_args_list[1].args, ("Invoice.list", {"docstatus": 1, "offset": 2, "limit": 2}))
+        self.assertEqual(call.call_args_list[0].args, ("Invoice.list", {"docstatus": 1, "offset": 0, "limit": 2, "sort_by": "id", "sort_order": "asc"}))
+        self.assertEqual(call.call_args_list[1].args, ("Invoice.list", {"docstatus": 1, "offset": 2, "limit": 2, "sort_by": "id", "sort_order": "asc"}))
 
     def test_default_page_size_does_not_drop_record_501(self):
         """Cross the real 500-row boundary to prove a second page is included."""
@@ -92,7 +92,7 @@ class Pagination(unittest.TestCase):
         """Growth or shrinkage during the fetch requires a consistent rerun."""
         for next_total in (1, 3):
             pages = [{"data": rows("a"), "total": 2}, {"data": rows("b"), "total": next_total}]
-            with self.subTest(total=next_total), patch.object(Client, "call", side_effect=pages), self.assertRaises(McpError):
+            with self.subTest(total=next_total), patch.object(Client, "call", side_effect=pages * 3), self.assertRaises(McpError):
                 self.client().list_all("Invoice")
 
     def test_more_rows_than_total_rejected(self):
@@ -104,13 +104,13 @@ class Pagination(unittest.TestCase):
         """Duplicate records must not count toward an apparently complete total."""
         for pages in ([{"data": rows("a", "a"), "total": 2}],
                       [{"data": rows("a"), "total": 2}, {"data": rows("a"), "total": 2}]):
-            with self.subTest(pages=pages), patch.object(Client, "call", side_effect=pages), self.assertRaises(McpError):
+            with self.subTest(pages=pages), patch.object(Client, "call", side_effect=pages * 3), self.assertRaises(McpError):
                 self.client().list_all("Invoice")
 
     def test_repeated_page_without_ids_rejected(self):
         """Page fingerprints catch a stuck endpoint even when IDs are unavailable."""
         page = {"data": [{"name": "synthetic"}], "total": 2}
-        with patch.object(Client, "call", side_effect=[page, page]), self.assertRaises(McpError):
+        with patch.object(Client, "call", side_effect=[page, page] * 3), self.assertRaises(McpError):
             self.client().list_all("Invoice")
 
     def test_bad_page_and_record_shapes_rejected(self):

@@ -103,10 +103,10 @@ Python 3.10+ standard library only; no installs.
 ```bash
 cd 31-order-to-cash-watcher
 source .env                      # local only, never committed
-python -m o2c --instance keystone --out reports/                       # uses AGENTSWITCH_BASE_URL / AGENTSWITCH_TOKEN
+python3 -m o2c --instance keystone --out reports/                       # uses AGENTSWITCH_BASE_URL / AGENTSWITCH_TOKEN
 AGENTSWITCH_BASE_URL=$AS AGENTSWITCH_TOKEN=$TOKEN \
-  python -m o2c --instance suryodaya --out reports/                    # Suryodaya
-python -m unittest discover -s tests -t .                              # unit tests, no platform calls
+  python3 -m o2c --instance suryodaya --out reports/                    # Suryodaya
+python3 -m unittest discover -s tests -t .                              # unit tests, no platform calls
 ```
 
 `--days N` sets the threshold (default 7, or `O2C_DAYS`). `--date YYYY-MM-DD` reruns a past day. `reports/` holds customer data and is gitignored.

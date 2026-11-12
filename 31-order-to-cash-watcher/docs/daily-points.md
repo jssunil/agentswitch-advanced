@@ -41,7 +41,7 @@ Running log of instructor notices, what we did, and what is open. Newest day las
 
 **Built (branch `seat31/first-task-plan`)**
 - `PLAN.md`: definition of done, milestones, owner split, 12 candidate suite tasks, open questions, how to run.
-- `o2c/`: read-only report, `python -m o2c --days 7 --instance keystone --out reports/`. The client refuses any non-read tool before a request is sent.
+- `o2c/`: read-only report, `python3 -m o2c --days 7 --instance keystone --out reports/`. The client refuses any non-read tool before a request is sent.
 - `tests/`: 7 unit tests on made-up rows, all passing.
 - First run (N = 7): sections 1 and 3 produced rows on Suryodaya; Keystone had orders but no payments. Invoices overdue: blocked on both. Counts in `private/platform-notes.md`.
 
@@ -122,7 +122,7 @@ Only invoices are blocked (`BUG-31-001`, see `findings/BUG-31-001.md`, raised in
 **Not doing:** working out overdue invoices from order data. The instructor said to read due date and balance from Invoice.
 
 ## 7 Nov 2026 (night) — Deepak: drafts and payment matching
-- `o2c/drafts.py` (new): `python -m o2c.drafts --instance <name> --out reports/` proposes reminder drafts and writes a review file. It changes nothing.
+- `o2c/drafts.py` (new): `python3 -m o2c.drafts --instance <name> --out reports/` proposes reminder drafts and writes a review file. It changes nothing.
   - One internal digest to accounts: orders not invoiced, plus payments not applied with candidate matches.
   - One reminder per customer for overdue invoices, once BUG-31-001 is fixed.
   - `--create --mailbox-id <id>` saves approved drafts after a person types a confirmation. They stay unsent.
@@ -133,7 +133,7 @@ Only invoices are blocked (`BUG-31-001`, see `findings/BUG-31-001.md`, raised in
 - 20 unit tests pass (10 new: matching, drafts, and the writer refusing every send tool).
 
 ## 7 Nov 2026 (late) — Deepak: suite tasks 5–10
-- `o2c/tasks_payments.py`: tasks 5–10 in the harness format. Each recounts from raw list rows with its own filter and compares with the report. Results look like `{id: "<instance>:<task>", title, passed, score, evidence}`. `run(ctx)` turns a crash into an infrastructure failure. Sunil's runner imports `TASKS` and `run()`. Local check: `python -m o2c.tasks_payments --instance suryodaya --date 2026-11-07`.
+- `o2c/tasks_payments.py`: tasks 5–10 in the harness format. Each recounts from raw list rows with its own filter and compares with the report. Results look like `{id: "<instance>:<task>", title, passed, score, evidence}`. `run(ctx)` turns a crash into an infrastructure failure. Sunil's runner imports `TASKS` and `run()`. Local check: `python3 -m o2c.tasks_payments --instance suryodaya --date 2026-11-07`.
 - **Live run, 7 Nov, read-only:**
   - Suryodaya: 7 passes (row count and total match the independent recount). 8 passes (outgoing and transfer payments checked, none leaked). Figures in `private/platform-notes.md`.
   - Keystone: 7 and 8 pass on an empty instance, and the evidence says so.

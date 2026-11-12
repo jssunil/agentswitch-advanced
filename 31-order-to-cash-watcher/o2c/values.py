@@ -27,7 +27,10 @@ def business_date(value):
         if DATE.fullmatch(value):
             return date.fromisoformat(value)
         if TIMESTAMP.fullmatch(value):
-            return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+            # Python 3.10 accepts only 3/6 fractional digits. Normalize to six
+            # after full validation so every supported version parses the same input.
+            normalized = re.sub(r"\.(\d{1,6})", lambda m: "." + m[1].ljust(6, "0"), value)
+            return datetime.fromisoformat(normalized.replace("Z", "+00:00")).date()
     raise ValueError("expected YYYY-MM-DD or a valid ISO timestamp")
 
 

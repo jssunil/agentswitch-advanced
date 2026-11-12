@@ -73,7 +73,8 @@ is left untouched. Concurrent source changes can therefore require a rerun, not 
   there is no implicit zone conversion. Trailing junk and impossible dates are rejected.
 - Orders need a valid nonfuture date to enter age-based exceptions. Invoices with missing/invalid
   due dates are retained in the separate no-usable-due-date list and never get overdue reminders.
-  Incoming payments with usable balances but missing/invalid/future dates stay visible with unknown age.
+  Incoming payments with usable balances but missing/invalid dates stay visible with unknown age;
+  valid future payment dates retain a negative age and #35's explicit `future` bucket, with a warning.
 - Amounts use one finite Decimal parser. Numeric strings render correctly, cent rounding is
   half-even, and zero/negative balances do not become overdue/unallocated exceptions. Missing or
   malformed informational amounts remain `null`/`unknown`, not zero. Rows whose required balance
@@ -90,5 +91,21 @@ is left untouched. Concurrent source changes can therefore require a rerun, not 
   old pair (or remove a newly published first file), and temporary artifacts are cleaned up. This is
   not a cross-file atomicity guarantee for machine crashes or concurrent readers.
 
-`order_age_bucket` and `ORDER_AGE_BUCKETS` are order-specific to avoid colliding with the different
-payment-age buckets introduced by Deepak's open PR #35. That feature is not included here.
+### Section 3 integration from PR #35
+
+Deepak's payment feature is now integrated into this draft: age/status/customer summaries are
+per currency; reconciled-but-unallocated payments are flagged; applied history is read from
+PaymentReceived when available. The report reads tool availability once to choose source coverage.
+
+`order_age_bucket` and `ORDER_AGE_BUCKETS` stay separate from payment `age_bucket` / `AGE_BUCKETS`.
+Order buckets are 0–7, 8–14, 15–30, 31–60, >60; payment buckets are future, 0–30, 31–60, 61–90, 90+, unknown.
+Existing payment IDs, amounts, currency provenance and statuses remain; #35 adds `summary`, `note`,
+`receipt_history`, row bucket/docstatus/notes and receipt hints. These fields are covered by integration tests.
+
+Receipt hints compare customer/amount only: they never allocate money or prove a particular invoice is paid.
+Posted events are not double-counted as applied events; v1 receipt consideration/number fields are preserved.
+Malformed financial receipt data is excluded with diagnostics and partial history coverage. If that prevents
+verifying any history, the additional `unknown` hint renders as “history incomplete” and its applied total
+is null, rather than claiming “no history” or zero. Validated paid counts are labelled accordingly.
+
+This draft now depends on **#13 → #17 → #35** before its own final replay/rebase and review.

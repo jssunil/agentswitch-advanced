@@ -1,19 +1,21 @@
 # Report follow-up: validation, order ages and safe output
 
-This draft is Sunil's report/runner follow-up. It now includes shared parsing and output reliability
-requested in review. The agent entry point, model integration, graded-task prompts and PR #35's
-payment summaries/receipt-history feature remain separate.
+This draft combines Sunil's report/runner follow-up with Deepak's #35 as an explicit dependency.
+It preserves the shared parsing/output fixes requested in review. The agent entry point, model
+integration and graded-task prompts remain separate.
 
 ## Dependency and scope
 
 The branch initially started from #17 at `0b1540b`. It now incorporates the latest #17
 `da9299c84b049f9cffaf6bcfb4bcc0e90c29fb92` and upstream main `40d2900` without rewriting
 published history. Thus it includes the attribution fix, partially-paid labels and three-table digest.
-The refreshed source inventory includes open/closed PRs through #35. #13/#17 remain open; this draft
+The refreshed source inventory includes open/closed PRs through #35. #35 head `0c4744b` is now
+integrated, following Deepak's refreshed Seat 31 handoff. #13/#17/#35 remain open; this draft
 still has inherited changes relative to upstream main. That merge-readiness blocker is not resolved
 by integrating their code. No aggregate-PR approval is assumed.
 
-After the dependencies merge, replay only this follow-up onto updated main and rerun verification.
+Merge order is #13 → #17 → #35, followed by the #29 follow-up. After those dependencies merge,
+replay only this follow-up onto updated main and rerun verification.
 The initial report commit is `1a8becc`; pagination is `a3dbc5f`; explanatory comments are `2f70611`.
 The later review-fix commit and current evidence are identified in the PR description.
 
@@ -23,7 +25,7 @@ The later review-fix commit and current evidence are identified in the PR descri
 - Record order-date provenance, unverified deliverability and exception-only age buckets.
 - Keep oldest first; equal ages group by resolved currency, then descending value, then number/ID.
 - Never compare raw values across currencies or invent a deliverable date from delivery status.
-- Use `order_age_bucket` / `ORDER_AGE_BUCKETS` to avoid colliding with #35's payment helpers.
+- Use `order_age_bucket` / `ORDER_AGE_BUCKETS` separately from the integrated #35 payment helpers.
 - Round normalized monetary fields to cents before rendering/sorting; sub-cent differences are
   not invisible value tie-breakers. JSON keys and numeric monetary field types remain compatible.
 
@@ -55,7 +57,11 @@ automatically resolved; passing tests do not substitute for the reviewer's final
 - Seat 31 Admin answers on 6/10/11 November: direct invoice balances/dates, missing-date warnings,
   internal reporting first, draft-only approval, explicit N and recommended deliverability-age buckets.
 - Deepak's division of ownership and #13/#17 comments; latest #17 fixes integrated.
-- #35 inspected for shared interfaces/naming; its payment feature is not duplicated.
+- #35 is integrated with its original commits/attribution. Currency-separated summaries and receipt
+  fields are retained, not reimplemented independently. Integration tests verify summary dimensions,
+  tool availability, legacy shape, posted/applied handling, future payment buckets and read-only output.
+  Shared validation additionally diagnoses bad receipt amounts/dates/children; incomplete history
+  never becomes an asserted absence or a zero applied total.
 - Open #21 replaces closed #12; state-only graders cannot validate local report content, and
   the identity/cwd contract remains later agent work.
 - #24/#25's instructor-scored pairs-file exception is not assumed to cover Seat 31.

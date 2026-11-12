@@ -11,6 +11,7 @@ import urllib.request
 READ_SUFFIXES = (".list", ".get")
 READ_TOOLS = {"tools.list", "tools.search", "tools.describe", "endpoint.make.thread"}
 PAGE_SIZE = 500
+# A broken endpoint must not keep the report fetching indefinitely.
 MAX_PAGES = 1000
 
 
@@ -77,6 +78,11 @@ class Client:
         Every page must carry data and a consistent nonnegative total. Missing
         metadata, repeated records/pages and early exhaustion are errors, never
         a partial success. A short page alone does not establish completion.
+
+        The accumulated rows stay private to this call until completion. If a
+        later page fails, callers get an exception instead of a shorter list
+        that could be mistaken for the full financial report. These checks
+        detect observed inconsistencies; they do not create a database snapshot.
         """
         if isinstance(max_pages, bool) or not isinstance(max_pages, int) or max_pages <= 0:
             raise ValueError("max_pages must be a positive integer")
@@ -89,35 +95,53 @@ class Client:
             raise PaginationError(f"{entity}.list pagination incomplete: {reason}")
 
         for _ in range(max_pages):
+            # The client owns paging. Caller-supplied filters cannot skip the
+            # first records or override the page size through offset/limit.
             page = self.call(f"{entity}.list", {**(filters or {}), "limit": PAGE_SIZE, "offset": offset})
             if not isinstance(page, dict):
                 invalid("response is not an object")
             data, total = page.get("data"), page.get("total")
+            # An absent data field is a malformed response, not an empty table.
             if not isinstance(data, list) or any(not isinstance(row, dict) for row in data):
                 invalid("data must be a list of record objects")
+            # bool is a subclass of int in Python; True is not a valid row count.
+            # Missing totals are deliberately errors: we cannot prove coverage.
             if isinstance(total, bool) or not isinstance(total, int) or total < 0:
                 invalid("total must be a nonnegative integer on every page")
             if expected_total is None:
                 expected_total = total
             elif total != expected_total:
+                # The source may have changed while we read it. Require a rerun
+                # rather than combine pages with different advertised counts.
                 invalid("total changed during pagination")
             if offset + len(data) > total:
                 invalid("returned row count exceeds total")
             if not data and offset < total:
+                # End-of-data contradicts the advertised count. Returning here
+                # would hide the missing records as a successful report.
                 invalid("empty page before total was reached")
             if data:
+                # Detect an endpoint ignoring offset, even on rows without IDs.
+                # Canonical key ordering avoids differences in dictionary order;
+                # retain only a digest rather than another copy of customer data.
                 fingerprint = hashlib.sha256(json.dumps(data, sort_keys=True).encode("utf-8")).digest()
                 if fingerprint in seen_pages:
                     invalid("repeated page")
                 seen_pages.add(fingerprint)
                 for row in data:
                     if row.get("id") is not None:
+                        # Pages can overlap without being identical. Such overlap
+                        # can inflate totals and conceal a record we never read.
                         record_id = json.dumps(row["id"], sort_keys=True)
                         if record_id in seen_ids:
                             invalid("duplicate record id")
                         seen_ids.add(record_id)
+            # Accept a page only after all its checks pass. Advance by the actual
+            # row count because a server may return less than the requested limit.
             rows.extend(data)
             offset += len(data)
+            # Equality, not a short page, is our completion condition. The valid
+            # empty-table case (zero rows, total zero) also completes here.
             if offset == total:
                 return rows
         invalid("page limit reached before total was reached")

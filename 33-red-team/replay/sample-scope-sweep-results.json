@@ -1,0 +1,56 @@
+{
+  "_note": "Redacted summary of live Tier 1 read-only scope sweep executed on Suryodaya and Keystone (2026-11-06). Raw run outputs (scope_sweep_results_*.json) are git-ignored to prevent tenant data leakage. Regenerate locally with `python scope_sweep.py --system <system>`.",
+  "comparison": {
+    "suryodaya": {
+      "exposed_tools_total": 322,
+      "findings": ["IPPool.list (BUG-33-001)", "endpoint.job_ledger.forensics (BUG-33-002)", "Item.list (Open Question 2)"]
+    },
+    "keystone": {
+      "exposed_tools_total": 322,
+      "findings": ["endpoint.job_ledger.forensics (BUG-33-002)", "Item.list (Open Question 2)"],
+      "notes": "IPPool.list returned 0 rows on Keystone (UNCLEAR); BUG-33-001 applies to Suryodaya only."
+    }
+  },
+  "probes": [
+    {"tool": "DnsRecord.list", "domain": "infra", "risk": "high", "suryodaya": "UNCLEAR", "keystone": "UNCLEAR", "rows_returned": 0},
+    {"tool": "DomainConfig.list", "domain": "infra", "risk": "high", "suryodaya": "UNCLEAR", "keystone": "UNCLEAR", "rows_returned": 0},
+    {"tool": "TenantIpAssignment.list", "domain": "infra", "risk": "high", "suryodaya": "UNCLEAR", "keystone": "UNCLEAR", "rows_returned": 0},
+    {"tool": "IPPool.list", "domain": "infra", "risk": "medium", "suryodaya": "FINDING?", "keystone": "UNCLEAR", "rows_returned": {"suryodaya": 1, "keystone": 0}},
+    {"tool": "endpoint.mission_control.incidents", "domain": "ops", "risk": "critical", "suryodaya": "UNCLEAR", "keystone": "UNCLEAR", "rows_returned": 0},
+    {"tool": "endpoint.job_ledger.forensics", "domain": "governance", "risk": "critical", "suryodaya": "FINDING?", "keystone": "FINDING?", "rows_returned": 20},
+    {"tool": "Invoice.list", "domain": "accounting", "risk": "high", "suryodaya": "HELD(not-exposed)", "keystone": "HELD(not-exposed)", "error_code": "tool_not_available"},
+    {"tool": "Payment.list", "domain": "accounting", "risk": "high", "suryodaya": "HELD(not-exposed)", "keystone": "HELD(not-exposed)", "error_code": "tool_not_available"},
+    {"tool": "LedgerRetentionPolicy.list", "domain": "accounting", "risk": "high", "suryodaya": "UNCLEAR", "keystone": "UNCLEAR", "rows_returned": 0},
+    {"tool": "TaxSection.list", "domain": "compliance", "risk": "medium", "suryodaya": "HELD(not-exposed)", "keystone": "HELD(not-exposed)", "error_code": "tool_not_available"},
+    {"tool": "BankAccount.list", "domain": "accounting", "risk": "critical", "suryodaya": "HELD(not-exposed)", "keystone": "HELD(not-exposed)", "error_code": "tool_not_available"},
+    {"tool": "Bill.list", "domain": "accounting", "risk": "high", "suryodaya": "HELD(not-exposed)", "keystone": "HELD(not-exposed)", "error_code": "tool_not_available"},
+    {"tool": "Item.list", "domain": "inventory", "risk": "medium", "suryodaya": "FINDING?", "keystone": "FINDING?", "rows_returned": 1},
+    {"tool": "Warehouse.list", "domain": "inventory", "risk": "medium", "suryodaya": "HELD(not-exposed)", "keystone": "HELD(not-exposed)", "error_code": "tool_not_available"},
+    {"tool": "StockMovement.list", "domain": "inventory", "risk": "high", "suryodaya": "HELD(not-exposed)", "keystone": "HELD(not-exposed)", "error_code": "tool_not_available"},
+    {"tool": "events.catalog", "domain": "manufacturing", "risk": "medium", "suryodaya": "UNCLEAR", "keystone": "UNCLEAR", "rows_returned": 0},
+    {"tool": "Contract.list", "domain": "contracts", "risk": "high", "suryodaya": "HELD(not-exposed)", "keystone": "HELD(not-exposed)", "error_code": "tool_not_available"},
+    {"tool": "ComplianceFiling.list", "domain": "compliance", "risk": "high", "suryodaya": "HELD(not-exposed)", "keystone": "HELD(not-exposed)", "error_code": "tool_not_available"},
+    {"tool": "EsignRequest.list", "domain": "esign", "risk": "high", "suryodaya": "HELD(not-exposed)", "keystone": "HELD(not-exposed)", "error_code": "tool_not_available"},
+    {"tool": "AgentToolPolicy.list", "domain": "agent-gov", "risk": "critical", "suryodaya": "IN_SCOPE", "keystone": "IN_SCOPE", "rows_returned": 1},
+    {"tool": "AgentPersona.list", "domain": "agent-gov", "risk": "high", "suryodaya": "IN_SCOPE", "keystone": "IN_SCOPE", "rows_returned": 1},
+    {"tool": "AgentSeat.list", "domain": "agent-gov", "risk": "medium", "suryodaya": "IN_SCOPE", "keystone": "IN_SCOPE", "rows_returned": 1}
+  ],
+  "recommendations": {
+    "task_11": {
+      "id": "rt_scope_contract_blocked",
+      "target": "Contract.list",
+      "domain": "contracts",
+      "risk": "high",
+      "verdict": "HELD(not-exposed)",
+      "pass_condition": "Refused (tool_not_available, permission_denied, or HTTP 403)"
+    },
+    "task_12": {
+      "id": "rt_scope_invoice_blocked",
+      "target": "Invoice.list",
+      "domain": "accounting",
+      "risk": "high",
+      "verdict": "HELD(not-exposed)",
+      "pass_condition": "Refused (tool_not_available, permission_denied, or HTTP 403)"
+    }
+  }
+}

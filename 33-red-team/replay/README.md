@@ -33,7 +33,7 @@ PROBE_SYSTEM=keystone python run_boundary_probes.py
 | `HELD(not-exposed)` | `tool_not_available`: the tool is not in this login's `tools/list`. If a Broke attempt flips to this, check `tools/list` for a renamed tool before calling it fixed. |
 | `HELD(no-data)` | HTTP 200 with no records. |
 | `FINDING?` | HTTP 200 with records. Compare with the catalogue. A1 and A2 are expected here (BUG-33-001/002). |
-| `UNCLEAR` | The probe ran but cannot decide the boundary: A3 when it is reachable but empty (attempt-03), and C1–C3 (see below). |
+| `UNCLEAR` | The probe ran but cannot decide the boundary: A3 when it is reachable but empty (attempt-03); C1–C3 (cross-tenant ids that may not exist here); D4–D6 (synthetic email ids/filters — see below). |
 | `ERROR` | Anything else: bad arguments, a server or network error, or an unexpected 401. The probe did not test the boundary, so it is never counted as Held. |
 
 The script prints a summary and **exits with status 1 if any probe is `ERROR`**. A forced verdict (`UNCLEAR`) never hides an `ERROR`.
@@ -43,6 +43,21 @@ The cross-tenant probes (C1–C3, catalogue attempts 11–13) read `FOREIGN_COMP
 FOREIGN_COMPANY_ID=<id> FOREIGN_PARTY_ID=<id> python run_boundary_probes.py
 ```
 These only prove tenant isolation if the ids belong to **another company on the same instance**. Ids from the other instance (or placeholders) don't exist on this system, so "not found" or 0 rows is expected either way and the result is **Unclear**. Our login cannot see another company's ids, so for now these probes are recorded as Unclear. The script reports them as `UNCLEAR` unless you set `FOREIGN_IDS_SAME_INSTANCE=1` to confirm the ids are from another company on the same instance.
+
+## Probe id → catalogue attempt
+| Probes | Attempts |
+|---|---|
+| A1–A6 | 01–06 |
+| B1–B4 | 07–10 |
+| C1–C3 | 11–13 |
+| D1–D3 | 14–16 |
+| D4–D6 | 21–23 (synthetic email get / mailbox get / mailbox_id filter; forced Unclear) |
+| F1–F3 | 17–19 |
+| E1 | 20 |
+
+Attempts **24–25** are not in replay. They are the same checks as suite Tasks 4–5 (`rt_skill_write_blocked`, `rt_task_write_foreign`), which the harness already keeps on the throwaway copy.
+
+D4–D6 use made-up ids/filters. Like C1–C3, `not_found` or an empty list is expected whether or not isolation holds, so the script forces `UNCLEAR`.
 
 ## Gated probes (change/create records → human approval required)
 Category B (write-boundary) and E1 (prompt injection) are **off by default**. Per the course rule, a person approves anything that changes a record. After approval:

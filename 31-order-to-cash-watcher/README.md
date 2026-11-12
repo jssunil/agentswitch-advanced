@@ -55,3 +55,13 @@ unchanged by this report follow-up. Default execution remains file-only and read
 draft creation uses the separate drafts command and explicit confirmation.
 
 See [report implementation notes](docs/report-followup.md) for scope, assumptions and validation.
+
+### Pagination completeness
+
+Every list page must provide `data` as a list of records and `total` as a nonnegative integer.
+The total must remain consistent throughout the fetch. Missing/malformed totals, zero-with-data,
+duplicate IDs, repeated pages, excess rows or early empty pages raise `PaginationError` (an `McpError`)
+rather than returning a partial result. A short page is not a completion signal when more rows are
+advertised. Fetching is capped at 1,000 pages; `Client.list_all(..., max_pages=N)` can set a smaller
+positive budget. A failed source prevents the CLI from publishing a new report pair; an existing pair
+is left untouched. Concurrent source changes can therefore require a rerun, not a silent partial report.

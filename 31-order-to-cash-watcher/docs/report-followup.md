@@ -72,3 +72,22 @@ the tracker implementation summary rather than assumed here.
 Human authors must still write and label graded tasks. The known partially-paid presentation,
 overdue-invoice digest section, receipt-source policy and external-mail attribution questions are
 not marked complete by this work.
+
+## Review follow-up: pagination (12 November)
+
+Addresses PR #29's missing-total pagination thread. The chosen policy is explicit protocol failure,
+not a fallback assumption that an omitted total means zero. This deliberately expands the original
+report-only follow-up to the shared list client, as requested in review; other client hardening is
+still separate. No authentication or draft/refusal policy is changed.
+
+`list_all` returns only after the distinct returned records reach the validated, stable integer total.
+Incomplete/malformed pages, repeated pages/IDs and page-budget exhaustion raise `PaginationError`.
+Exceptions contain protocol facts rather than row contents or credentials. No new report files are
+published after a source fails, including when an earlier section was read successfully.
+
+`tests/test_pagination.py` covers the protocol, the 501st record, page offsets/filters, bounded fetches,
+transport failure, and complete/incomplete CLI publication. The missing-total regression was checked
+against the old code before implementation and reproduced the silent-return bug.
+
+This does not fix the other open review threads (strict shared dates/amounts, instance path validation,
+publication failures after output writing starts, or prerequisite/rebase scope).

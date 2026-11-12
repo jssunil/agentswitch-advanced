@@ -80,6 +80,25 @@ class InvoicesOverdue(unittest.TestCase):
         self.assertEqual([r["number"] for r in overdue], ["late"])  # due today is not yet overdue
         self.assertEqual(overdue[0]["days_overdue"], 1)
 
+    def test_partially_paid_label(self):
+        # Instructor answer 11: 100 invoiced, 90 received -> report the 10, age from due date, label "partially paid"
+        part = dict(invoice("part", "2026-11-01", 10.0), grand_total=100.0, amount_paid=90.0)
+        unpaid = dict(invoice("unpaid", "2026-11-01", 100.0), grand_total=100.0, amount_paid=0.0)
+        overdue, _ = report.invoices_overdue([part, unpaid], D)
+        rows = {r["number"]: r for r in overdue}
+        self.assertEqual((rows["part"]["payment_state"], rows["part"]["outstanding"], rows["part"]["days_overdue"]),
+                         ("partially paid", 10.0, 14))
+        self.assertEqual(rows["unpaid"]["payment_state"], "unpaid")
+
+    def test_markdown_counts_and_labels_partially_paid(self):
+        part = dict(invoice("part", "2026-11-01", 10.0), grand_total=100.0, amount_paid=90.0)
+        unpaid = dict(invoice("unpaid", "2026-11-01", 100.0), grand_total=100.0, amount_paid=0.0)
+        overdue, no_due = report.invoices_overdue([part, unpaid], D)
+        md = "\n".join(report._invoice_tables(overdue, no_due))
+        self.assertIn("1 of 2 are **partially paid**", md)
+        self.assertIn("| 10.00 currency not recorded | partially paid |", md)
+        self.assertIn("| 100.00 currency not recorded | unpaid |", md)
+
     def test_supplier_bills_are_never_overdue_customer_invoices(self):
         # 11 Nov: Invoice also holds supplier bills (direction "payable"); they must not get a reminder
         bill = dict(invoice("bill", "2026-10-01", 100.0), direction="payable")
@@ -173,7 +192,7 @@ class MarkdownEscaping(unittest.TestCase):
         md = report.to_markdown(rep)
         rows = _table_rows(md)
         self.assertEqual(len(rows), 4)  # one line per record: no row was split
-        widths = {"| SO": 8, "| INV": 9, "| PAY": 8}
+        widths = {"| SO": 8, "| INV": 10, "| PAY": 8}
         for line in rows:
             expected = next(w for prefix, w in widths.items() if line.startswith(prefix))
             self.assertEqual(_columns(line), expected, line)

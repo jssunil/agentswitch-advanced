@@ -10,6 +10,7 @@ SUBMITTED = 1
 CANCELLED = 2
 NOT_INVOICED = ("unbilled", "partially_invoiced")
 RECEIVABLE = "receivable"
+PARTIALLY_PAID = "partially paid"
 FIXTURE_MARKERS = ("test", "harness", "fixture")
 AGE_BUCKETS = ("0-7", "8-14", "15-30", "31-60", ">60")
 
@@ -229,6 +230,7 @@ def invoices_overdue(invoices, report_date):
         if inv.get("docstatus") != SUBMITTED or inv.get("direction", RECEIVABLE) != RECEIVABLE:
             continue
         outstanding = round(float(inv.get("outstanding") or 0), 2)
+        paid = round(float(inv.get("amount_paid") or 0), 2)
         due = _as_date(inv.get("due_date"))
         row = {
             "number": inv.get("number"),
@@ -242,6 +244,9 @@ def invoices_overdue(invoices, report_date):
             "grand_total": inv.get("grand_total"),
             "amount_paid": inv.get("amount_paid"),
             "outstanding": outstanding,
+            # Instructor answer 11 (10 Nov): money received and a balance left -> report the balance,
+            # age it from the due date, and label it "partially paid".
+            "payment_state": PARTIALLY_PAID if paid > 0 and outstanding > 0 else ("unpaid" if outstanding > 0 else "paid"),
             "currency": inv.get("currency_code"),
             "fixture": looks_like_fixture(inv),
         }
@@ -349,18 +354,21 @@ def cell(v):
 
 
 def _invoice_rows(rows):
-    out = ["| Invoice | Customer | Due | Days overdue | Terms | Total | Paid | Outstanding | |",
-           "|---|---|---|---:|---|---:|---:|---:|---|"]
+    out = ["| Invoice | Customer | Due | Days overdue | Terms | Total | Paid | Outstanding | Payment | |",
+           "|---|---|---|---:|---|---:|---:|---:|---|---|"]
     for r in rows:
         out.append(f"| {cell(r['number'])} | {cell(r['customer'])} | {cell(r['due_date'])} | "
                    f"{r['days_overdue'] if r['days_overdue'] is not None else ''} | {cell(r['payment_terms'])} | "
                    f"{_money(r['grand_total'])} | {_money(r['amount_paid'])} | {_money(r['outstanding'])} {cell(_cur(r))} | "
-                   f"{'fixture' if r['fixture'] else ''} |")
+                   f"{cell(r.get('payment_state'))} | {'fixture' if r['fixture'] else ''} |")
     return out
 
 
 def _invoice_tables(rows, no_due):
-    lines = (_invoice_rows(rows) if rows else ["None."]) + [""]
+    partly = sum(1 for r in rows if r.get("payment_state") == PARTIALLY_PAID)
+    lines = ([f"{partly} of {len(rows)} are **partially paid** (some money received, a balance left); "
+              "they show the balance and are aged from the due date.", ""] if partly else [])
+    lines += (_invoice_rows(rows) if rows else ["None."]) + [""]
     lines += [f"### Invoices with no due date ({len(no_due)})", ""]
     lines += (_invoice_rows(no_due) if no_due else ["None."]) + [""]
     return lines

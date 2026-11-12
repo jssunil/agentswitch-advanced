@@ -64,6 +64,11 @@ class Client:
     def tool_names(self):
         return {t["name"] for t in self._rpc("tools/list", {}).get("tools", [])}
 
+    def tool_schemas(self):
+        """{tool name: set of input field names}, from tools/list (read only)."""
+        return {t["name"]: set(((t.get("inputSchema") or {}).get("properties") or {}))
+                for t in self._rpc("tools/list", {}).get("tools", [])}
+
     def call(self, name, args=None):
         if not is_read_tool(name):
             raise WriteBlocked(f"{name} is not a read tool; the report is read-only")

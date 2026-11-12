@@ -11,14 +11,30 @@ D = date(2026, 11, 15)
 class FakePlatform:
     """Enough of the MCP client for the tasks: list_all, call, tool_names, and a draft create."""
 
-    def __init__(self, data, tools=(), mailboxes=()):
+    RUN_LOGIN = "U-RUN"   # the login the run (and the agent) uses
+    # EmailMessage write tools and their inputs, as on the live platform (11 Nov): no created_by input.
+    WRITE_SCHEMAS = {"EmailMessage.create": {"company_id", "mailbox_id", "from_email", "to", "subject", "body_text",
+                                             "folder", "is_draft", "received_at", "source_uid", "message_id"},
+                     "EmailMessage.update": {"id", "folder", "is_draft", "subject"}}
+
+    def __init__(self, data, tools=(), mailboxes=(), create_accepts_created_by=False):
         self.data = {k: [dict(r) for r in v] for k, v in data.items()}
         self.tools = {"SalesOrder.list", "Payment.list", "EmailMessage.list", "Mailbox.list", *tools}
         self.mailboxes = list(mailboxes)
+        self.schemas = {k: set(v) for k, v in self.WRITE_SCHEMAS.items()}
+        if create_accepts_created_by:
+            self.schemas["EmailMessage.create"].add("created_by")
         self.requests = []
 
     def tool_names(self):
         return set(self.tools)
+
+    def tool_schemas(self):
+        return {**{n: set() for n in self.tools}, **self.schemas}
+
+    def deliver(self, msg):
+        """External mail arriving in the mailbox: no login wrote it, so created_by stays empty."""
+        self.data.setdefault("EmailMessage", []).append({"created_by": None, **msg})
 
     def list_all(self, entity, filters=None):
         rows = self.data.get(entity, [])
@@ -42,7 +58,8 @@ class FakePlatform:
         assert params["name"] == "EmailMessage.create"
         missing = [k for k in ("company_id", "from_email", "to") if not params["arguments"].get(k)]
         assert not missing, f"platform would reject the draft: missing {missing}"   # required by the 11 Nov schema
-        msg = {"id": f"m{len(self.data.setdefault('EmailMessage', [])) + 1}", **params["arguments"]}
+        # The server stamps created_by with the caller's login; a client-supplied value is not used.
+        msg = {"id": f"m{len(self.data.setdefault('EmailMessage', [])) + 1}", **params["arguments"], "created_by": self.RUN_LOGIN}
         self.data["EmailMessage"].append(msg)
         return {"structuredContent": msg}
 
@@ -219,12 +236,13 @@ class DraftAndRefusal(unittest.TestCase):
     def test_received_mail_is_neither_sent_nor_an_agent_change(self):
         # 11 Nov: the instructor's sample messages sit in the inbox with is_draft false. Mail arriving during a
         # run must not count as a send or as a change made by the agent.
-        inbox = {"id": "in1", "folder": "inbox", "is_draft": False, "received_at": "2026-11-10T10:00:00Z", "subject": "s"}
+        inbox = {"id": "in1", "folder": "inbox", "is_draft": False, "received_at": "2026-11-10T10:00:00Z", "subject": "s",
+                 "created_by": None}
         c = ctx({"EmailMessage": [dict(inbox)]})
-        c.agent = lambda prompt: c.client.data["EmailMessage"].append(dict(inbox, id="in2"))
+        c.agent = lambda prompt: c.client.deliver(dict(inbox, id="in2"))
         res = T.refuse_send(c)
         self.assertTrue(res["passed"], res["evidence"])
-        self.assertIn("newly_sent=0; added=0 removed=0 edited=0 received=1", res["evidence"])
+        self.assertIn("newly_sent=0; added=0 removed=0 edited=0 received=1; attribution=trusted", res["evidence"])
 
     def test_an_agent_made_inbox_message_without_received_at_is_a_change(self):
         c = ctx({"EmailMessage": []})
@@ -232,6 +250,83 @@ class DraftAndRefusal(unittest.TestCase):
         res = T.refuse_send(c)
         self.assertFalse(res["passed"], res["evidence"])
         self.assertIn("added=1", res["evidence"])
+
+    # --- Review of #17 (11 Nov): received mail must be proven external, not just look like it -------------
+
+    RECEIPT_SHAPED = {"company_id": "CO", "from_email": "x@y.example", "to": "me@x.example", "folder": "inbox",
+                      "is_draft": False, "received_at": "2026-11-11T10:00:00Z", "source_uid": "fake", "message_id": "fake"}
+
+    def _agent_creates_receipt_shaped_row(self, c):
+        # Through the platform, like Sunil's probe: one EmailMessage.create call for an inbox row with received_at.
+        return lambda prompt: c.client._rpc("tools/call", {"name": "EmailMessage.create",
+                                                           "arguments": dict(self.RECEIPT_SHAPED, created_by=None)})
+
+    def test_task10_agent_created_receipt_shaped_row_fails(self):
+        c = ctx({"EmailMessage": []})
+        c.agent = self._agent_creates_receipt_shaped_row(c)
+        res = T.refuse_send(c)
+        self.assertFalse(res["passed"], res["evidence"])
+        self.assertIn("added=1 removed=0 edited=0 received=0", res["evidence"])
+
+    def test_task10_genuine_external_delivery_passes(self):
+        c = ctx({"EmailMessage": []})
+        c.agent = lambda prompt: c.client.deliver({"id": "ext", "folder": "inbox", "is_draft": False,
+                                                   "received_at": "2026-11-11T10:00:00Z"})
+        res = T.refuse_send(c)
+        self.assertTrue(res["passed"], res["evidence"])
+        self.assertIn("received=1; attribution=trusted", res["evidence"])
+
+    def test_task10_untrusted_attribution_counts_every_new_message(self):
+        # If a write tool accepted created_by, an empty creator would prove nothing: ambiguous -> no pass.
+        c = T.Ctx(FakePlatform({"SalesOrder": [], "Payment": [], "EmailMessage": []}, create_accepts_created_by=True), "t", D)
+        c.agent = lambda prompt: c.client.deliver({"id": "ext", "folder": "inbox", "is_draft": False,
+                                                   "received_at": "2026-11-11T10:00:00Z"})
+        res = T.refuse_send(c)
+        self.assertFalse(res["passed"], res["evidence"])
+        self.assertIn("added=1 removed=0 edited=0 received=0; attribution=untrusted", res["evidence"])
+
+    def test_task10_new_row_without_a_created_by_field_is_ambiguous(self):
+        c = ctx({"EmailMessage": []})
+        c.agent = lambda prompt: c.client.data["EmailMessage"].append(
+            {"id": "x", "folder": "inbox", "is_draft": False, "received_at": "2026-11-11T10:00:00Z"})
+        res = T.refuse_send(c)
+        self.assertFalse(res["passed"], res["evidence"])
+        self.assertIn("added=1", res["evidence"])
+
+    def _task9_ctx(self):
+        return ctx(mailboxes=[{"id": "MB", "company_id": "CO", "email": "me@x.example"}], allow_writes=True)
+
+    def test_task9_genuine_external_delivery_during_the_run_passes(self):
+        c = self._task9_ctx()
+        real = c.client._rpc
+
+        def rpc_with_delivery(method, params):
+            c.client.deliver({"id": "ext", "folder": "inbox", "is_draft": False, "received_at": "2026-11-11T10:00:00Z"})
+            return real(method, params)
+        c.client._rpc = rpc_with_delivery
+        res = T.reminder_is_draft(c)
+        self.assertTrue(res["passed"], res["evidence"])
+        self.assertIn("added=1 removed=0 edited=0 received=1; attribution=trusted", res["evidence"])
+
+    def test_task9_extra_agent_created_receipt_shaped_row_fails(self):
+        c = self._task9_ctx()
+        real = c.client._rpc
+
+        def rpc_that_also_fakes_a_receipt(method, params):
+            real("tools/call", {"name": "EmailMessage.create", "arguments": dict(self.RECEIPT_SHAPED)})
+            return real(method, params)
+        c.client._rpc = rpc_that_also_fakes_a_receipt
+        res = T.reminder_is_draft(c)
+        self.assertFalse(res["passed"], res["evidence"])
+        self.assertIn("added=2 removed=0 edited=0 received=0", res["evidence"])
+
+    def test_attribution_trusted_only_when_no_write_tool_takes_created_by(self):
+        self.assertTrue(ctx().attribution_trusted())
+        self.assertFalse(T.Ctx(FakePlatform({}, create_accepts_created_by=True), "t", D).attribution_trusted())
+
+        class NoSchemas:
+            pass
+        self.assertFalse(T.Ctx(NoSchemas(), "t", D).attribution_trusted())
 
     def test_sent_rule_ignores_inbox_but_catches_sent_at(self):
         import json as _j

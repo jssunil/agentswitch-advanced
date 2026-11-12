@@ -32,48 +32,113 @@ def _money(v, currency=None):
     return f"{v:,.2f}{' ' + currency if currency else ''}" if isinstance(v, (int, float)) else ""
 
 
+def _plain(v, width=None):
+    """Record text for a plain-text table cell: one line, optionally cut to `width` characters."""
+    text = " ".join(str(v if v is not None else "").split())
+    return text if width is None or len(text) <= width else text[:width - 1] + "…"
+
+
+def text_table(headers, rows, right=()):
+    """A plain-text table with aligned columns (the digest is a plain-text email body).
+
+    `right` holds the indexes of columns to right-align (amounts and counts).
+    """
+    cells = [[_plain(c) for c in row] for row in rows]
+    widths = [max([len(h)] + [len(r[i]) for r in cells]) for i, h in enumerate(headers)]
+
+    def line(values):
+        return "  ".join(v.rjust(w) if i in right else v.ljust(w) for i, (v, w) in enumerate(zip(values, widths))).rstrip()
+
+    return [line(headers), line(["-" * w for w in widths])] + [line(r) for r in cells]
+
+
+def _totals(rows, amount_key):
+    """Per-currency totals as text, e.g. '100.00 INR; 50.00 USD'. Never added across currencies."""
+    return "; ".join(_amount(t, c) for c, _, t in by_currency(rows, amount_key)) or "0.00"
+
+
+CUSTOMER_WIDTH = 40
+
+
 def accounts_digest(rep, matches, accounts_email=None):
-    """One internal note covering sections 1 and 3. Returns None if there is nothing to say."""
-    orders = rep["sections"]["orders_not_invoiced"]
-    payments = rep["sections"]["payments_not_applied"]
+    """The daily report as one internal draft to accounts (instructor answers 3 and 9, 10 Nov).
+
+    A short summary, then one table per exception type: orders not invoiced, invoices overdue,
+    payments not applied. Amounts are per currency and never added across currencies. Returns
+    None if there is nothing to report.
+    """
+    secs = rep["sections"]
+    orders, invoices, payments = secs["orders_not_invoiced"], secs["invoices_overdue"], secs["payments_not_applied"]
     order_rows = orders["rows"] if orders["status"] == "ok" else []
+    inv_rows = invoices["rows"] if invoices["status"] == "ok" else []
     pay_rows = payments["rows"] if payments["status"] == "ok" else []
-    if not order_rows and not pay_rows:
+    if not order_rows and not inv_rows and not pay_rows:
         return None
     by_payment = {m["payment"]: m for m in matches}
+    partly = sum(1 for r in inv_rows if r.get("payment_state") == report.PARTIALLY_PAID)
+    inv_count = str(len(inv_rows)) if invoices["status"] == "ok" else "not available"
+    test = lambda r: "test data" if r.get("fixture") else ""
+
     lines = [
         "Hello,",
         "",
-        f"This is the order-to-cash exception list for {rep.get('instance') or 'our company'} on {rep['report_date']}. "
-        "Please check the items below. Nothing has been changed in the system.",
+        f"This is the order-to-cash exception report for {rep.get('instance') or 'our company'} on {rep['report_date']} "
+        f"(orders count after {rep['days']} days). Nothing has been changed in the system.",
+        "",
+        "Summary",
+        f"- Orders not invoiced: {len(order_rows)}" + (f", total {_totals(order_rows, 'grand_total')}" if order_rows else ""),
+        f"- Invoices overdue: {inv_count}" + (f", {_totals(inv_rows, 'outstanding')} outstanding" if inv_rows else "")
+        + (f" ({partly} partially paid)" if partly else ""),
+        f"- Payments not applied: {len(pay_rows)}" + (f", {_totals(pay_rows, 'unallocated')} unallocated" if pay_rows else ""),
+        "Amounts in different currencies are shown separately, never added together.",
+        "",
+        f"1. Orders not invoiced more than {rep['days']} days after the order date ({len(order_rows)})",
         "",
     ]
     if order_rows:
-        lines += [f"Orders not invoiced more than {rep['days']} days after the order date ({len(order_rows)}):", ""]
-        for r in order_rows:
-            lines.append(f"- {r['number']}, {r['customer'] or 'unknown customer'}, ordered {r['order_date']} "
-                         f"({r['age_days']} days), {r['invoiced_status']}, {_amount(r['grand_total'], r.get('currency'))}"
-                         f"{' [test data]' if r['fixture'] else ''}")
+        lines += text_table(
+            ["Order", "Customer", "Ordered", "Age (days)", "Invoiced", "Total", ""],
+            [[r["number"], _plain(r["customer"] or "unknown customer", CUSTOMER_WIDTH), r["order_date"], r["age_days"],
+              r["invoiced_status"], _amount(r["grand_total"], r.get("currency")), test(r)] for r in order_rows],
+            right={3, 5})
         lines += ["", "Please raise the invoice, or reply with the reason it is on hold.", ""]
+    else:
+        lines += ["None.", ""]
+
+    lines += [f"2. Invoices overdue ({inv_count})", ""]
+    if inv_rows:
+        lines += text_table(
+            ["Invoice", "Customer", "Due", "Days overdue", "Outstanding", "Payment", ""],
+            [[r["number"], _plain(r["customer"] or "unknown customer", CUSTOMER_WIDTH), r["due_date"], r["days_overdue"],
+              _amount(r["outstanding"], r.get("currency")), r.get("payment_state") or "", test(r)] for r in inv_rows],
+            right={3, 4})
+        lines += ["", "A reminder draft is proposed for each customer with an email address; a person reviews and sends it.", ""]
+    elif invoices["status"] == "ok":
+        lines += ["None.", ""]
+    else:
+        lines += ["Not available: invoice data cannot be read by this login.", ""]
+
+    lines += [f"3. Payments not applied ({len(pay_rows)})", ""]
     if pay_rows:
-        lines += [f"Payments received but not applied to an invoice ({len(pay_rows)}):", ""]
+        rows = []
         for r in pay_rows:
-            m = by_payment.get(r["number"]) or {}
-            cands = m.get("candidates") or []
-            hint = ("; possible match: " + ", ".join(
-                f"{c['kind']} {c['number']} ({_amount(c['amount'], c.get('currency'))}{', same amount' if c['exact'] else ''})" for c in cands)
-                    ) if cands else "; no candidate found"
-            lines.append(f"- {r['number']}, {r['customer'] or 'unknown customer'}, received {r['payment_date'] or '?'}, "
-                         f"{_amount(r['unallocated'], r.get('currency'))} unallocated, {r['status']}{hint}{' [test data]' if r['fixture'] else ''}")
+            cands = (by_payment.get(r["number"]) or {}).get("candidates") or []
+            match = ", ".join(f"{c['kind']} {c['number']} ({_amount(c['amount'], c.get('currency'))}"
+                              f"{', same amount' if c['exact'] else ''})" for c in cands) or "no candidate found"
+            rows.append([r["number"], _plain(r["customer"] or "unknown customer", CUSTOMER_WIDTH), r["payment_date"] or "?",
+                         _amount(r["unallocated"], r.get("currency")), r["status"], match, test(r)])
+        lines += text_table(["Payment", "Customer", "Received", "Unallocated", "Status", "Possible match", ""], rows, right={3})
         lines += ["", "Please apply each payment to the right invoice. The matches are suggestions only.", ""]
+    else:
+        lines += ["None.", ""]
     lines += ["Thank you."]
     return {
         "kind": "accounts_digest",
         "to": accounts_email or ACCOUNTS_PLACEHOLDER,
         "subject": f"Order-to-cash exceptions {rep['report_date']}: {len(order_rows)} orders not invoiced, "
-                   f"{len(pay_rows)} payments not applied",
+                   f"{inv_count} invoices overdue, {len(pay_rows)} payments not applied",
         "body_text": "\n".join(lines),
-        "refs": [r["number"] for r in order_rows] + [r["number"] for r in pay_rows],
+        "refs": [r["number"] for r in order_rows] + [r["number"] for r in inv_rows] + [r["number"] for r in pay_rows],
         "fixture": False,
         "status": "proposed",
     }
@@ -106,6 +171,14 @@ def _amount(v, currency):
     return _money(v, currency) if currency else f"{_money(v)} ({UNKNOWN_CURRENCY})"
 
 
+def _reminder_line(r, cur):
+    """One invoice line in a customer reminder; a partly paid invoice says so (instructor answer 11)."""
+    line = f"- Invoice {r['number']}, due {r['due_date']}, {_amount(r['outstanding'], cur)} outstanding"
+    if r.get("payment_state") == report.PARTIALLY_PAID:
+        line += f" (partially paid: {_amount(round(float(r.get('amount_paid') or 0), 2), cur)} received, thank you)"
+    return line
+
+
 def overdue_reminders(invoice_rows, parties_by_id):
     """One reminder per customer with overdue invoices. Customers with no email are returned
     as skipped, so a person can follow up another way.
@@ -131,13 +204,13 @@ def overdue_reminders(invoice_rows, parties_by_id):
         if len(groups) == 1:
             cur, _, total = groups[0]
             for r in rows:
-                lines.append(f"- Invoice {r['number']}, due {r['due_date']}, {_amount(r['outstanding'], cur)} outstanding")
+                lines.append(_reminder_line(r, cur))
             lines += ["", f"Total outstanding: {_amount(total, cur)}."]
         else:
             for cur, group, total in groups:
                 lines.append(f"Invoices in {cur or UNKNOWN_CURRENCY}:")
                 for r in group:
-                    lines.append(f"- Invoice {r['number']}, due {r['due_date']}, {_amount(r['outstanding'], cur)} outstanding")
+                    lines.append(_reminder_line(r, cur))
                 lines += [f"Subtotal ({cur or UNKNOWN_CURRENCY}): {_amount(total, cur)}", ""]
             lines.append("Total outstanding by currency (not added together): "
                          + "; ".join(_amount(t, c) for c, t in subtotals) + ".")

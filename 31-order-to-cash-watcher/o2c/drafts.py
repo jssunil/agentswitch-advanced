@@ -23,13 +23,15 @@ from pathlib import Path
 
 from . import matching, report
 from .client import Client, McpError, WriteBlocked
+from .values import money, money_sum, money_text
+from .output import instance_label, report_stem, write_pair
 
 DRAFT_TOOL = "EmailMessage.create"
 ACCOUNTS_PLACEHOLDER = "(accounts address: a person fills this in)"
 
 
 def _money(v, currency=None):
-    return f"{v:,.2f}{' ' + currency if currency else ''}" if isinstance(v, (int, float)) else ""
+    return money_text(v) + (" " + currency if currency else "")
 
 
 def _plain(v, width=None):
@@ -54,7 +56,9 @@ def text_table(headers, rows, right=()):
 
 def _totals(rows, amount_key):
     """Per-currency totals as text, e.g. '100.00 INR; 50.00 USD'. Never added across currencies."""
-    return "; ".join(_amount(t, c) for c, _, t in by_currency(rows, amount_key)) or "0.00"
+    text = "; ".join(_amount(t, c) for c, _, t in by_currency(rows, amount_key)) or "0.00"
+    unknown = sum(r.get(amount_key) is None for r in rows)
+    return text + (f"; {unknown} amount(s) unknown" if unknown else "")
 
 
 CUSTOMER_WIDTH = 40
@@ -71,8 +75,10 @@ def accounts_digest(rep, matches, accounts_email=None):
     orders, invoices, payments = secs["orders_not_invoiced"], secs["invoices_overdue"], secs["payments_not_applied"]
     order_rows = orders["rows"] if orders["status"] == "ok" else []
     inv_rows = invoices["rows"] if invoices["status"] == "ok" else []
+    no_due = invoices.get("no_due_date", []) if invoices["status"] == "ok" else []
     pay_rows = payments["rows"] if payments["status"] == "ok" else []
-    if not order_rows and not inv_rows and not pay_rows:
+    diagnostics = [r for sec in secs.values() for r in sec.get("data_issues", [])]
+    if not order_rows and not inv_rows and not pay_rows and not no_due and not diagnostics:
         return None
     by_payment = {m["payment"]: m for m in matches}
     partly = sum(1 for r in inv_rows if r.get("payment_state") == report.PARTIALLY_PAID)
@@ -118,6 +124,13 @@ def accounts_digest(rep, matches, accounts_email=None):
     else:
         lines += ["Not available: invoice data cannot be read by this login.", ""]
 
+    if no_due:
+        lines += [f"Invoices with no usable due date ({len(no_due)}): investigate; not counted as overdue.", ""]
+        lines += text_table(["Invoice", "Customer", "Outstanding"],
+                            [[r["number"], _plain(r.get("customer"), CUSTOMER_WIDTH),
+                              _amount(r.get("outstanding"), r.get("currency"))] for r in no_due], right={2})
+        lines.append("")
+
     lines += [f"3. Payments not applied ({len(pay_rows)})", ""]
     if pay_rows:
         rows = []
@@ -131,6 +144,10 @@ def accounts_digest(rep, matches, accounts_email=None):
         lines += ["", "Please apply each payment to the right invoice. The matches are suggestions only.", ""]
     else:
         lines += ["None.", ""]
+    if diagnostics:
+        lines += ["Data validation warnings: coverage is partial; valid exceptions are retained."]
+        lines += [f"- {_plain(r.get('number') or r.get('id'))}: {_plain(r['field'])}: {_plain(r['reason'])}" for r in diagnostics]
+        lines.append("")
     lines += ["Thank you."]
     return {
         "kind": "accounts_digest",
@@ -138,7 +155,7 @@ def accounts_digest(rep, matches, accounts_email=None):
         "subject": f"Order-to-cash exceptions {rep['report_date']}: {len(order_rows)} orders not invoiced, "
                    f"{inv_count} invoices overdue, {len(pay_rows)} payments not applied",
         "body_text": "\n".join(lines),
-        "refs": [r["number"] for r in order_rows] + [r["number"] for r in inv_rows] + [r["number"] for r in pay_rows],
+        "refs": [r["number"] for r in order_rows] + [r["number"] for r in inv_rows] + [r["number"] for r in no_due] + [r["number"] for r in pay_rows],
         "fixture": False,
         "status": "proposed",
     }
@@ -164,7 +181,22 @@ def by_currency(rows, amount_key="outstanding"):
     for r in rows:
         groups.setdefault(_currency(r), []).append(r)
     order = sorted(k for k in groups if k) + ([None] if None in groups else [])
-    return [(k, groups[k], round(sum(float(r.get(amount_key) or 0) for r in groups[k]), 2)) for k in order]
+    result = []
+    for k in order:
+        amounts = []
+        for row in groups[k]:
+            try:
+                amount = money(row.get(amount_key))
+                if amount is not None:
+                    amounts.append(amount)
+            except ValueError:
+                pass  # The report carries diagnostics; invalid amounts never become zero.
+        try:
+            subtotal = money_sum(amounts)
+        except ValueError:
+            subtotal = None
+        result.append((k, groups[k], subtotal))
+    return result
 
 
 def _amount(v, currency):
@@ -175,7 +207,7 @@ def _reminder_line(r, cur):
     """One invoice line in a customer reminder; a partly paid invoice says so (instructor answer 11)."""
     line = f"- Invoice {r['number']}, due {r['due_date']}, {_amount(r['outstanding'], cur)} outstanding"
     if r.get("payment_state") == report.PARTIALLY_PAID:
-        line += f" (partially paid: {_amount(round(float(r.get('amount_paid') or 0), 2), cur)} received, thank you)"
+        line += f" (partially paid: {_amount(r.get('amount_paid'), cur)} received, thank you)"
     return line
 
 
@@ -392,13 +424,16 @@ def main():
     ap.add_argument("--mailbox-id", default=os.environ.get("O2C_MAILBOX_ID"),
                     help="only needed if this login has several mailboxes and no default one")
     args = ap.parse_args()
+    try:
+        instance_label(args.instance)
+    except ValueError as e:
+        ap.error(str(e))
 
     client = Client()
     prop = propose(client, report_date=args.date, days=args.days, instance=args.instance, accounts_email=args.accounts_email)
-    args.out.mkdir(parents=True, exist_ok=True)
-    stem = args.out / f"{args.instance or 'report'}-{prop['report_date']}-drafts"
-    stem.with_suffix(".json").write_text(json.dumps(prop, indent=2), encoding="utf-8")
-    stem.with_suffix(".md").write_text(to_markdown(prop), encoding="utf-8")
+    basename = report_stem(args.instance, prop["report_date"], "-drafts")
+    write_pair(args.out, basename, json.dumps(prop, indent=2, allow_nan=False), to_markdown(prop))
+    stem = args.out / basename
     s = prop["match_summary"]
     print(f"wrote {stem}.md ({len(prop['drafts'])} drafts proposed; {s['with_candidates']}/{s['payments']} payments with a candidate)")
 

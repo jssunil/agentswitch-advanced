@@ -7,6 +7,7 @@ Invoice.list is granted (BUG-31-001), pass invoices instead, with `outstanding` 
 """
 
 from . import report
+from .values import business_date, money_number
 
 INVOICED = ("invoiced", "partially_invoiced")
 
@@ -15,14 +16,30 @@ def _doc_currency(row, currencies):
     return report.resolve_currency(row.get("currency_code"), row.get("party_id"), row.get("company_id"), currencies)[0]
 
 
+def _amount(value):
+    try:
+        return money_number(value)
+    except ValueError:
+        return None
+
+
+def _date(value):
+    try:
+        day = business_date(value)
+        return day.isoformat() if day else None
+    except ValueError:
+        return None
+
+
 def order_documents(orders, currencies=None):
     """Submitted, (partly) invoiced orders as matchable documents."""
     return [
         {"kind": "order", "number": o.get("number"), "id": o.get("id"), "party_id": o.get("party_id"),
-         "date": str(o.get("date") or "")[:10] or None, "amount": round(float(o.get("grand_total") or 0), 2),
+         "date": _date(o.get("date")), "amount": _amount(o.get("grand_total")),
          "currency": _doc_currency(o, currencies)}
         for o in orders
         if o.get("docstatus") == 1 and o.get("invoiced_status") in INVOICED and o.get("party_id")
+        and _amount(o.get("grand_total")) is not None
     ]
 
 
@@ -31,10 +48,11 @@ def invoice_documents(invoices, currencies=None):
     matchable against a customer's payment."""
     return [
         {"kind": "invoice", "number": i.get("number"), "id": i.get("id"), "party_id": i.get("party_id"),
-         "date": str(i.get("date") or "")[:10] or None, "amount": round(float(i.get("outstanding") or 0), 2),
+         "date": _date(i.get("date")), "amount": _amount(i.get("outstanding")),
          "currency": _doc_currency(i, currencies)}
         for i in invoices
-        if i.get("docstatus") == 1 and float(i.get("outstanding") or 0) > 0 and i.get("party_id")
+        if i.get("docstatus") == 1 and _amount(i.get("outstanding")) is not None
+        and _amount(i.get("outstanding")) > 0 and i.get("party_id")
         and i.get("direction", "receivable") == "receivable"
     ]
 

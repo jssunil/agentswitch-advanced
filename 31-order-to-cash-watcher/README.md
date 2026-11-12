@@ -46,7 +46,7 @@ therefore marked `deliverability_status=unverified`, not assumed ready for billi
   At N=7 the first bucket is empty by design: the strict threshold still excludes age 7.
 - Submitted unbilled orders with missing/invalid/future dates appear in separate date diagnostics
   and are excluded from age-based rows and bucket counts. They must be investigated, not treated
-  as confirmed non-exceptions. Other report sections retain their existing date handling.
+  as confirmed non-exceptions. See the shared validation policy below for invoices and payments.
 
 The original section headings and table columns remain; consumers should accept additive JSON
 metadata and explanatory Markdown paragraphs. Invoice access unavailable means **blocked**, not zero
@@ -65,3 +65,30 @@ rather than returning a partial result. A short page is not a completion signal 
 advertised. Fetching is capped at 1,000 pages; `Client.list_all(..., max_pages=N)` can set a smaller
 positive budget. A failed source prevents the CLI from publishing a new report pair; an existing pair
 is left untouched. Concurrent source changes can therefore require a rerun, not a silent partial report.
+
+### Shared validation and file publication
+
+- Source dates must be a complete `YYYY-MM-DD` or ISO timestamp (`T`/space, hours/minutes,
+  optional seconds/fraction, optional `Z` or `+/-HH:MM`). The recorded calendar day is retained;
+  there is no implicit zone conversion. Trailing junk and impossible dates are rejected.
+- Orders need a valid nonfuture date to enter age-based exceptions. Invoices with missing/invalid
+  due dates are retained in the separate no-usable-due-date list and never get overdue reminders.
+  Incoming payments with usable balances but missing/invalid/future dates stay visible with unknown age.
+- Amounts use one finite Decimal parser. Numeric strings render correctly, cent rounding is
+  half-even, and zero/negative balances do not become overdue/unallocated exceptions. Missing or
+  malformed informational amounts remain `null`/`unknown`, not zero. Rows whose required balance
+  is unusable are excluded from balance-based exceptions and explicitly diagnosed.
+- Each section has `data_issues` and `coverage` (`complete`, `partial`, `blocked`). `status=ok`
+  means a source was read, not that every row passed validation. Valid exceptions survive bad neighbours.
+  Warnings reach JSON, Markdown and the internal digest; missing-due-date warnings also reach Accounts.
+- Existing numeric JSON money fields stay numeric when a finite cent value is representable safely;
+  rejected values are `null` plus diagnostics. No `NaN`/Infinity JSON is emitted.
+- Output instance labels allow 1–64 ASCII letters/digits/underscores/hyphens, starting with a letter/digit.
+  An omitted label uses `report`; explicitly blank labels, separators and absolute/traversal paths fail
+  before platform reads. Direct writer callers are validated too.
+- Both UTF-8 files are staged before replacing final files. Handled replacement failures restore the
+  old pair (or remove a newly published first file), and temporary artifacts are cleaned up. This is
+  not a cross-file atomicity guarantee for machine crashes or concurrent readers.
+
+`order_age_bucket` and `ORDER_AGE_BUCKETS` are order-specific to avoid colliding with the different
+payment-age buckets introduced by Deepak's open PR #35. That feature is not included here.

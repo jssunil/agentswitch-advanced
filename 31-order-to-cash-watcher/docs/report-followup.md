@@ -1,93 +1,77 @@
-# Section 1/report follow-up
+# Report follow-up: validation, order ages and safe output
 
-## Scope
+This draft is Sunil's report/runner follow-up. It now includes shared parsing and output reliability
+requested in review. The agent entry point, model integration, graded-task prompts and PR #35's
+payment summaries/receipt-history feature remain separate.
 
-This is Sunil's deterministic report change. The agent entry point, model integration, graded
-task prompts, canonical payment-source changes and Deepak's draft/refusal verifier remain separate.
+## Dependency and scope
 
-Implemented:
+The branch initially started from #17 at `0b1540b`. It now incorporates the latest #17
+`da9299c84b049f9cffaf6bcfb4bcc0e90c29fb92` and upstream main `40d2900` without rewriting
+published history. Thus it includes the attribution fix, partially-paid labels and three-table digest.
+The refreshed source inventory includes open/closed PRs through #35. #13/#17 remain open; this draft
+still has inherited changes relative to upstream main. That merge-readiness blocker is not resolved
+by integrating their code. No aggregate-PR approval is assumed.
 
-1. Preserve submitted/unbilled-or-partly-invoiced eligibility and strict order age > N.
-2. Record `age_basis=order_date`, `deliverability_status=unverified`, and age bucket per row.
-3. Count buckets on canonical exception rows; no duplicate unverified financial list.
-4. Keep global oldest-first sorting. Equal ages group by currency and sort value descending within
-   each group; missing/nonfinite/nonnumeric amounts sort after known values, then number/ID.
-5. Resolve existing currency provenance before the final sort in build().
-6. Surface unusable order dates separately; don't turn malformed dates into zero-day or old orders.
-7. Validate CLI and library thresholds; retain explicit dates, UTF-8, escaping and blocked status.
+After the dependencies merge, replay only this follow-up onto updated main and rerun verification.
+The initial report commit is `1a8becc`; pagination is `a3dbc5f`; explanatory comments are `2f70611`.
+The later review-fix commit and current evidence are identified in the PR description.
 
-The lack of a verified deliverable-date field is intentional and visible. This change does not
-claim to implement deliverability-based ageing. Once the field and policy are agreed, introduce
-an explicit new mode/migration with its own fixtures rather than silently changing historical reports.
+## Order-report contract
 
-## Requirements considered
+- Preserve submitted/unbilled-or-partly-invoiced eligibility and strict order age > N.
+- Record order-date provenance, unverified deliverability and exception-only age buckets.
+- Keep oldest first; equal ages group by resolved currency, then descending value, then number/ID.
+- Never compare raw values across currencies or invent a deliverable date from delivery status.
+- Use `order_age_bucket` / `ORDER_AGE_BUCKETS` to avoid colliding with #35's payment helpers.
+- Round normalized monetary fields to cents before rendering/sorting; sub-cent differences are
+  not invisible value tie-breakers. JSON keys and numeric monetary field types remain compatible.
 
-- Seat 31 Admin answers, 10 November: oldest first/value ties, configurable N, recommended buckets
-  after deliverability, internal monitoring before customer reminders. The report labels its
-  present age basis rather than claiming the recommended deliverability rule is implemented.
-- Seat 31 Admin release notices, 10–11 November: invoice reads/mailboxes are live. Existing supplier
-  bill filtering and optional blocked coverage are preserved; this change doesn't claim a new live run.
-- Deepak's ownership split: section 1 and report runner here; invoice/payment/draft modules stay his.
-- PR #13/#17 reviews: preserve UTF-8, shared Markdown cell escaping, currency-source metadata,
-  supplier exclusions and proposal-only defaults. No cross-currency financial aggregate is added.
-- Open #21 replaces closed-unmerged #12. Its graders observe state, not printed answers; passing
-  our report tests is not certification of a Seat 34 graded run. Its command/token/cwd requirements
-  belong to the later entry-point work.
-- #24/#25's deterministic Seat 35 adapter and instructor-scored pairs-file exception are seat-specific;
-  no equivalent Seat 31 grading exception is assumed here.
-- Merged #15/#16/#23 review guidance: keep scope within the seat, keep approval steps explicit,
-  avoid write calls and explain the run command clearly. Open #26's default-draft behaviour is not copied.
-- Closed/merged Red Team work and open #19/#20/#27/#28 motivate preserving read-only execution and
-  not publishing sensitive platform material; they don't define new section-1 financial rules.
-- Open #11's client guards and #21's timeout/logging reviews remain inputs for later client/runner work,
-  not a reason to expand this report PR into unrelated authentication or process-supervision changes.
+## Review findings addressed in code
 
-The inventory of all 28 PRs was checked for status; selected relevant code/docs/reviews were examined.
-This is not an assertion that every historical PR received a full code review.
+1. Shared strict date parsing rejects malformed suffixes and invalid timestamps. Source calendar
+   dates are retained without implicit time-zone conversion.
+2. Shared Decimal parsing/formatting accepts numeric strings and rejects nonfinite/invalid amounts.
+   Half-even cent rounding is explicit. Unknown information is null/unknown, not zero.
+3. Orders without valid nonfuture dates are diagnosed/excluded from age checks. Missing/invalid
+   invoice due dates remain separately visible. A payment with usable funds but no usable date
+   remains a financial exception with unknown age.
+4. Section data_issues/coverage identify partial validation while valid records survive.
+   Candidate matching and digest formatting also use safe amount parsing.
+5. Pagination requires stable integer totals and complete pages; contradictions/duplicates/limits
+   raise PaginationError instead of silently returning partial data.
+6. Instance labels and report dates are validated before file creation, including direct writer
+   calls; both report and draft CLIs validate labels before constructing a client.
+7. JSON/Markdown are staged before publication. Handled replace failures roll back the old pair;
+   temporary files are cleaned. Two files are not power-failure/concurrent-reader atomic.
+8. The internal digest retains missing-due-date and validation warnings, including warning-only input.
+   Those rows are not included in overdue totals or customer overdue reminders.
 
-## Temporary base and integration
+The dependency/aggregate scope thread remains external to these code fixes. Review threads are not
+automatically resolved; passing tests do not substitute for the reviewer's final assessment.
 
-Implemented on `seat31/sunil-report-tests`, based on PR #17 head
-`0b1540b93ca3a1d3f3182949e8d1628e536557fd` while #13 and #17 are still open. It includes #13's latest
-receivable-only behaviour. This does not represent either PR as merged or approved at that head.
-Only this branch's report/test/doc changes should be replayed onto the eventual merged main.
-Do not copy the whole inherited tree into another report implementation.
+## Context used
 
-The known #17 received-mail attribution counterexample is inherited and unchanged. Its tests may
-pass despite that verifier limitation. Resolve it with Deepak independently; no strengthened
-approval or full-agent safety claim is implied by this report branch.
+- Seat 31 Admin answers on 6/10/11 November: direct invoice balances/dates, missing-date warnings,
+  internal reporting first, draft-only approval, explicit N and recommended deliverability-age buckets.
+- Deepak's division of ownership and #13/#17 comments; latest #17 fixes integrated.
+- #35 inspected for shared interfaces/naming; its payment feature is not duplicated.
+- Open #21 replaces closed #12; state-only graders cannot validate local report content, and
+  the identity/cwd contract remains later agent work.
+- #24/#25's instructor-scored pairs-file exception is not assumed to cover Seat 31.
+- Merged EA/Red Team work and current #26/#34 inform scope, safety and approval boundaries without
+  importing another seat's default write behaviour.
 
-## Tests and output evidence
+The complete PR inventory was checked for state; relevant code/docs/reviews were examined.
+This is not a claim that every historical PR received a new full code review.
 
-`tests/test_order_report.py` adds ordinary synthetic unit and CLI tests, not graded course tasks.
-They cover thresholds, buckets, dates/provenance, oldest-first/currency/value ties, stable IDs,
-resolved currency, missing values, legacy render compatibility, diagnostics, CLI validation,
-Unicode/table escaping, blocked invoice coverage and allowed read calls.
+## Verification
 
-Retain the inherited report/draft/matching/refusal regression suite. Run the entire discovery command
-in the README and compare synthetic report/proposal outputs with explicit expected IDs/amounts.
-No live records or model calls are needed. Final observed totals and private logs are recorded in
-the tracker implementation summary rather than assumed here.
+Run `python -m unittest discover -s tests -t . -v` in the seat folder. Tests are ordinary synthetic
+unit/CLI checks, not human-authored graded course tasks. They cover inherited behaviour, order
+threshold/bucket/currency sorting, pagination, strict values, mixed valid/malformed paginated data,
+output paths, Unicode/escaping, staged-write failures and replacement rollback.
 
-Human authors must still write and label graded tasks. The known partially-paid presentation,
-overdue-invoice digest section, receipt-source policy and external-mail attribution questions are
-not marked complete by this work.
-
-## Review follow-up: pagination (12 November)
-
-Addresses PR #29's missing-total pagination thread. The chosen policy is explicit protocol failure,
-not a fallback assumption that an omitted total means zero. This deliberately expands the original
-report-only follow-up to the shared list client, as requested in review; other client hardening is
-still separate. No authentication or draft/refusal policy is changed.
-
-`list_all` returns only after the distinct returned records reach the validated, stable integer total.
-Incomplete/malformed pages, repeated pages/IDs and page-budget exhaustion raise `PaginationError`.
-Exceptions contain protocol facts rather than row contents or credentials. No new report files are
-published after a source fails, including when an earlier section was read successfully.
-
-`tests/test_pagination.py` covers the protocol, the 501st record, page offsets/filters, bounded fetches,
-transport failure, and complete/incomplete CLI publication. The missing-total regression was checked
-against the old code before implementation and reproduced the silent-return bug.
-
-This does not fix the other open review threads (strict shared dates/amounts, instance path validation,
-publication failures after output writing starts, or prerequisite/rebase scope).
+Private logs and sanitized synthetic outputs are linked from the PR. No model/live business writes
+were performed. The stronger guarantees of live schema verification, all Python versions and
+complete agent/harness operation are not claimed.

@@ -3,7 +3,8 @@
 The rules are pure functions over rows so they can be tested without the platform.
 """
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
+from .values import business_date, money, money_number, money_text, currency_code
 
 IST = timezone(timedelta(hours=5, minutes=30))
 SUBMITTED = 1
@@ -12,7 +13,7 @@ NOT_INVOICED = ("unbilled", "partially_invoiced")
 RECEIVABLE = "receivable"
 PARTIALLY_PAID = "partially paid"
 FIXTURE_MARKERS = ("test", "harness", "fixture")
-AGE_BUCKETS = ("0-7", "8-14", "15-30", "31-60", ">60")
+ORDER_AGE_BUCKETS = ("0-7", "8-14", "15-30", "31-60", ">60")
 
 
 def today_ist():
@@ -28,8 +29,7 @@ UNKNOWN_CURRENCY = "currency not recorded"
 
 
 def _code(value):
-    code = str(value or "").strip().upper()
-    return code or None
+    return currency_code(value)
 
 
 def currency_context(client, names=None):
@@ -64,15 +64,47 @@ def resolve_currency(record_code, party_id, company_id, ctx):
     return None, None
 
 
-def apply_currency(rows, ctx):
+def apply_currency(rows, ctx, issues=None):
     """Set `currency` and `currency_source` on report rows (which carry party_id/company_id)."""
     for r in rows:
+        if r.get("currency") not in (None, "") and _code(r["currency"]) is None:
+            _issue(issues, r, "currency", "invalid currency code; using verified fallback if available")
         r["currency"], r["currency_source"] = resolve_currency(r.get("currency"), r.get("party_id"), r.get("company_id"), ctx)
     return rows
 
 
 def _as_date(value):
-    return date.fromisoformat(str(value)[:10]) if value else None
+    return business_date(value)
+
+
+def _issue(issues, row, field, reason):
+    if issues is not None:
+        issues.append({"id": row.get("id"), "number": row.get("number"), "field": field, "reason": reason})
+
+
+def _date_value(row, field, issues, report_date=None):
+    try:
+        day = business_date(row.get(field))
+    except ValueError:
+        _issue(issues, row, field, "invalid date")
+        return None
+    if day is None:
+        _issue(issues, row, field, "missing date")
+    elif report_date is not None and day > report_date:
+        _issue(issues, row, field, "future date; age unknown")
+        return None
+    return day
+
+
+def _amount_value(row, field, issues):
+    try:
+        result = money_number(row.get(field))
+        if result is None:
+            _issue(issues, row, field, "missing amount")
+        return result
+    except ValueError:
+        _issue(issues, row, field, "invalid or nonfinite amount")
+        return None
 
 
 def validate_days(days):
@@ -82,14 +114,14 @@ def validate_days(days):
     return days
 
 
-def age_bucket(age_days):
+def order_age_bucket(age_days):
     """Order-date age bucket; negative/unknown ages are not bucketed."""
     if age_days is None or age_days < 0:
         return None
-    for maximum, label in zip((7, 14, 30, 60), AGE_BUCKETS):
+    for maximum, label in zip((7, 14, 30, 60), ORDER_AGE_BUCKETS):
         if age_days <= maximum:
             return label
-    return AGE_BUCKETS[-1]
+    return ORDER_AGE_BUCKETS[-1]
 
 
 def _order_date(row):
@@ -123,10 +155,8 @@ def _order_sort_key(row):
     """Oldest first, then currency group, then descending value within the group."""
     currency = _code(row.get("currency"))
     try:
-        amount = Decimal(str(row.get("grand_total")))
-        if not amount.is_finite():
-            amount = None
-    except InvalidOperation:
+        amount = money(row.get("grand_total"))
+    except ValueError:
         amount = None
     return (-row["age_days"], currency is None, currency or "", amount is None,
             amount.copy_negate() if amount is not None else Decimal(0), str(row.get("number") or ""), str(row.get("id") or ""))
@@ -138,15 +168,15 @@ def sort_orders(rows):
 
 
 def order_age_summary(rows):
-    counts = dict.fromkeys(AGE_BUCKETS, 0)
+    counts = dict.fromkeys(ORDER_AGE_BUCKETS, 0)
     for row in rows:
-        bucket = age_bucket(row.get("age_days"))
+        bucket = order_age_bucket(row.get("age_days"))
         if bucket is not None:
             counts[bucket] += 1
     return counts
 
 
-def orders_not_invoiced(orders, report_date, days):
+def orders_not_invoiced(orders, report_date, days, issues=None):
     """Submitted orders not fully invoiced, strictly older than N by order date.
 
     No verified deliverable-date field is agreed yet; delivery state is not used
@@ -157,7 +187,7 @@ def orders_not_invoiced(orders, report_date, days):
     for o in orders:
         if o.get("docstatus") != SUBMITTED or o.get("invoiced_status") not in NOT_INVOICED:
             continue
-        order_date = _order_date(o)
+        order_date = _date_value(o, "date", issues, report_date)
         if order_date is None:
             continue
         age = (report_date - order_date).days
@@ -172,18 +202,18 @@ def orders_not_invoiced(orders, report_date, days):
             "order_date": order_date.isoformat(),
             "age_days": age,
             "age_basis": "order_date",
-            "age_bucket": age_bucket(age),
+            "age_bucket": order_age_bucket(age),
             "deliverability_status": "unverified",
             "invoiced_status": o.get("invoiced_status"),
             "delivered_status": o.get("delivered_status"),
-            "grand_total": o.get("grand_total"),
+            "grand_total": _amount_value(o, "grand_total", issues),
             "currency": o.get("currency_code"),
             "fixture": looks_like_fixture(o),
         })
     return sort_orders(out)
 
 
-def payments_not_applied(payments, report_date):
+def payments_not_applied(payments, report_date, issues=None):
     """Incoming payments (draft or submitted, not cancelled) with money not yet allocated to an invoice.
 
     Drafts are kept: the instructor counts all 40 Suryodaya receive payments as unallocated.
@@ -193,10 +223,10 @@ def payments_not_applied(payments, report_date):
     for p in payments:
         if p.get("type") != "receive" or p.get("docstatus") == CANCELLED:
             continue
-        unallocated = round(float(p.get("unallocated") or 0), 2)
-        if unallocated <= 0:
+        unallocated = _amount_value(p, "unallocated", issues)
+        if unallocated is None or unallocated <= 0:
             continue
-        paid = _as_date(p.get("date"))
+        paid = _date_value(p, "date", issues, report_date)
         out.append({
             "number": p.get("number"),
             "id": p.get("id"),
@@ -206,7 +236,7 @@ def payments_not_applied(payments, report_date):
             "currency": None,   # Payment has no currency field; resolved from customer/company
             "payment_date": paid.isoformat() if paid else None,
             "age_days": (report_date - paid).days if paid else None,
-            "amount": p.get("amount"),
+            "amount": _amount_value(p, "amount", issues),
             "unallocated": unallocated,
             "status": p.get("status"),
             "fixture": looks_like_fixture(p),
@@ -214,7 +244,7 @@ def payments_not_applied(payments, report_date):
     return sorted(out, key=lambda r: (-(r["age_days"] or 0), r["number"] or ""))
 
 
-def invoices_overdue(invoices, report_date):
+def invoices_overdue(invoices, report_date, issues=None):
     """Submitted invoices past their due date with a balance left, plus invoices with no due date.
 
     Due date and balance are read from the Invoice entity (`due_date`, `outstanding`), not
@@ -229,9 +259,9 @@ def invoices_overdue(invoices, report_date):
     for inv in invoices:
         if inv.get("docstatus") != SUBMITTED or inv.get("direction", RECEIVABLE) != RECEIVABLE:
             continue
-        outstanding = round(float(inv.get("outstanding") or 0), 2)
-        paid = round(float(inv.get("amount_paid") or 0), 2)
-        due = _as_date(inv.get("due_date"))
+        outstanding = _amount_value(inv, "outstanding", issues)
+        paid = _amount_value(inv, "amount_paid", issues)
+        due = _date_value(inv, "due_date", issues)
         row = {
             "number": inv.get("number"),
             "id": inv.get("id"),
@@ -241,18 +271,19 @@ def invoices_overdue(invoices, report_date):
             "due_date": due.isoformat() if due else None,
             "days_overdue": (report_date - due).days if due else None,
             "payment_terms": inv.get("payment_terms"),
-            "grand_total": inv.get("grand_total"),
-            "amount_paid": inv.get("amount_paid"),
+            "grand_total": _amount_value(inv, "grand_total", issues),
+            "amount_paid": paid,
             "outstanding": outstanding,
             # Instructor answer 11 (10 Nov): money received and a balance left -> report the balance,
             # age it from the due date, and label it "partially paid".
-            "payment_state": PARTIALLY_PAID if paid > 0 and outstanding > 0 else ("unpaid" if outstanding > 0 else "paid"),
+            "payment_state": "unknown" if outstanding is None or paid is None else (
+                PARTIALLY_PAID if paid > 0 and outstanding > 0 else ("unpaid" if outstanding > 0 else "paid")),
             "currency": inv.get("currency_code"),
             "fixture": looks_like_fixture(inv),
         }
         if due is None:
             no_due.append(row)
-        elif due < report_date and outstanding > 0:
+        elif due < report_date and outstanding is not None and outstanding > 0:
             overdue.append(row)
     overdue.sort(key=lambda r: (-r["days_overdue"], r["number"] or ""))
     no_due.sort(key=lambda r: r["number"] or "")
@@ -267,10 +298,12 @@ def build(client, report_date=None, days=7, instance=None, currencies=None):
     currencies = currencies if currencies is not None else currency_context(client, names)
 
     orders = client.list_all("SalesOrder", {"docstatus": SUBMITTED})
+    order_issues = []
     sections["orders_not_invoiced"] = {
         "status": "ok",
         "rule": f"submitted, invoiced_status in {list(NOT_INVOICED)}, order date more than {days} days ago",
-        "rows": sort_orders(apply_currency(orders_not_invoiced(orders, report_date, days), currencies)),
+        "rows": sort_orders(apply_currency(orders_not_invoiced(orders, report_date, days, order_issues), currencies, order_issues)),
+        "data_issues": order_issues,
     }
     order_section = sections["orders_not_invoiced"]
     order_section.update(
@@ -282,14 +315,16 @@ def build(client, report_date=None, days=7, instance=None, currencies=None):
     )
 
     if "Invoice.list" in names:
-        overdue, no_due = invoices_overdue(client.list_all("Invoice", {"docstatus": SUBMITTED}), report_date)
-        apply_currency(overdue, currencies)
-        apply_currency(no_due, currencies)
+        invoice_issues = []
+        overdue, no_due = invoices_overdue(client.list_all("Invoice", {"docstatus": SUBMITTED}), report_date, invoice_issues)
+        apply_currency(overdue, currencies, invoice_issues)
+        apply_currency(no_due, currencies, invoice_issues)
         sections["invoices_overdue"] = {
             "status": "ok",
             "rule": "customer invoices (receivable), submitted, due_date before the report date, outstanding > 0",
             "rows": overdue,
             "no_due_date": no_due,
+            "data_issues": invoice_issues,
         }
     else:
         sections["invoices_overdue"] = {
@@ -300,11 +335,16 @@ def build(client, report_date=None, days=7, instance=None, currencies=None):
         }
 
     payments = client.list_all("Payment", {"type": "receive"})
+    payment_issues = []
     sections["payments_not_applied"] = {
         "status": "ok",
         "rule": "incoming (receive), not cancelled, unallocated > 0",
-        "rows": apply_currency(payments_not_applied(payments, report_date), currencies),
+        "rows": apply_currency(payments_not_applied(payments, report_date, payment_issues), currencies, payment_issues),
+        "data_issues": payment_issues,
     }
+    for section in sections.values():
+        section["coverage"] = ("blocked" if section["status"] != "ok" else
+                               "partial" if section.get("data_issues") else "complete")
 
     return {
         "instance": instance,
@@ -323,7 +363,7 @@ TITLES = {
 
 
 def _money(v):
-    return f"{v:,.2f}" if isinstance(v, (int, float)) else ""
+    return money_text(v)
 
 
 def _cur(r):
@@ -394,6 +434,12 @@ def to_markdown(report):
             lines += [f"**{sec['status'].upper()}:** {sec['reason']}", ""]
             continue
         lines += [f"Rule: {sec['rule']}.", ""]
+        if sec.get("data_issues"):
+            lines += [f"Data validation: **{len(sec['data_issues'])} issue(s)**; coverage is partial. "
+                      "Valid exceptions are retained; unknown values are not zero.", ""]
+            lines += [f"- {cell(r.get('number') or r.get('id') or '(unnamed record)')}: "
+                      f"{cell(r['field'])}: {cell(r['reason'])}" for r in sec["data_issues"]]
+            lines.append("")
         if key == "invoices_overdue":
             lines += _invoice_tables(rows, sec.get("no_due_date", []))
             continue

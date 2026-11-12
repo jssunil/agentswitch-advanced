@@ -93,10 +93,10 @@ class OrderRules(unittest.TestCase):
 class BucketsAndOrdering(unittest.TestCase):
     def test_all_bucket_edges_and_unknown(self):
         ages = [0, 7, 8, 14, 15, 30, 31, 60, 61]
-        self.assertEqual([report.age_bucket(a) for a in ages],
+        self.assertEqual([report.order_age_bucket(a) for a in ages],
                          ["0-7", "0-7", "8-14", "8-14", "15-30", "15-30", "31-60", "31-60", ">60"])
-        self.assertIsNone(report.age_bucket(None))
-        self.assertIsNone(report.age_bucket(-1))
+        self.assertIsNone(report.order_age_bucket(None))
+        self.assertIsNone(report.order_age_bucket(-1))
 
     def test_buckets_only_count_exceptions(self):
         raw = [order(str(a), a) for a in [7, 8, 14, 15, 30, 31, 60, 61]]
@@ -140,10 +140,12 @@ class BucketsAndOrdering(unittest.TestCase):
         for data in (raw, list(reversed(raw))):
             self.assertEqual([r["id"] for r in report.orders_not_invoiced(data, D, 7)], expected)
 
-    def test_value_sort_does_not_round_high_precision_numbers(self):
+    def test_values_equal_at_cent_precision_use_stable_tie_break(self):
         raw = [order("a-low", value="1.000000000000000000000000000001"),
                order("z-high", value="1.000000000000000000000000000002")]
-        self.assertEqual([r["id"] for r in report.orders_not_invoiced(raw, D, 7)], ["z-high", "a-low"])
+        # Monetary normalization is shared by sorting/rendering: fractions below
+        # the documented cent precision must not create invisible value ordering.
+        self.assertEqual([r["id"] for r in report.orders_not_invoiced(raw, D, 7)], ["a-low", "z-high"])
 
 
 class OutputAndCLI(unittest.TestCase):

@@ -16,6 +16,8 @@ import argparse
 import json
 import os
 from datetime import date
+from decimal import Decimal
+from .values import business_date, currency_code, money, money_number
 
 from . import drafts, report
 from .client import Client, WriteBlocked
@@ -140,35 +142,78 @@ def _fmt(totals):
 
 
 def unapplied_payments(ctx):
+    """Independently recount raw payments; never derive expected facts from report output."""
     raw = _payments(ctx)
-    expected = {p["number"]: _money(p.get("unallocated")) for p in raw
-                if p.get("type") == "receive" and p.get("docstatus") != 2 and _money(p.get("unallocated")) > 0}
+    names = ctx.tools()
+    parties = {p.get("id"): currency_code(p.get("currency_id"))
+               for p in ctx.client.list_all("Party")} if "Party.list" in names else {}
+    companies = {c.get("id"): currency_code(c.get("default_currency"))
+                 for c in ctx.client.list_all("Company")} if "Company.list" in names else {}
+    expected, groups = {}, {n: {} for n in ("by_currency", "by_age", "by_status", "by_customer")}
+
+    def add(table, key, amount):
+        count, total = table.get(key, (0, Decimal(0)))
+        table[key] = count + 1, total + Decimal(str(amount))
+
+    for p in raw:
+        try:
+            amount = money_number(p.get("unallocated"))
+        except ValueError:
+            continue  # Invalid amounts are diagnostics, not verified positive balances.
+        if p.get("type") != "receive" or p.get("docstatus") == 2 or amount is None or amount <= 0:
+            continue
+        # Payment currently has no currency field. Recount its customer/company fallback
+        # independently rather than trusting the report's resolved currency.
+        company = companies.get(p.get("company_id")) if p.get("company_id") in companies else (
+            next(iter(companies.values())) if len(companies) == 1 else None)
+        cur = parties.get(p.get("party_id")) or company
+        try:
+            day = business_date(p.get("date"))
+        except ValueError:
+            day = None
+        age = (ctx.report_date - day).days if day else None
+        bucket = ("unknown" if age is None else "future" if age < 0 else
+                  "0-30" if age <= 30 else "31-60" if age <= 60 else "61-90" if age <= 90 else "90+")
+        expected[p["number"]] = amount, cur
+        party = p.get("party_id") or p.get("_party_id_display") or "unknown"
+        for name, key in (("by_currency", cur), ("by_age", (bucket, cur)),
+                          ("by_status", (p.get("status") or "unknown", cur)), ("by_customer", (party, cur))):
+            add(groups[name], key, amount)
     sec = ctx.report()["sections"]["payments_not_applied"]
     rows = sec["rows"]
-    got = {r["number"]: r["unallocated"] for r in rows}
-    amounts_ok = set(got) == set(expected) and all(abs(got[n] - expected[n]) < 0.01 for n in got)
-    # Per-currency recount: recounted amounts, grouped by the currency the report gave each row.
-    cur_of = {r["number"]: r.get("currency") for r in rows}
-    exp_cur = _by_currency((cur_of.get(n), a) for n, a in expected.items())
-    # Every summary table must add up, currency by currency, to the same figures as the recount.
+    got = {r["number"]: (r["unallocated"], r.get("currency")) for r in rows}
+    amounts_ok = (len(got) == len(rows) and set(got) == set(expected)
+                  and all(got[n] == expected[n] for n in got))
     summ = sec.get("summary") or {}
-    tables = {name: {} for name in ("by_age", "by_status", "by_customer")}
-    for name in tables:
-        for b in summ.get(name, []):
-            n, t = tables[name].get(b.get("currency"), (0, 0.0))
-            tables[name][b.get("currency")] = (n + b["count"], round(t + b["unallocated"], 2))
-    headline = {b.get("currency"): (b["count"], b["unallocated"]) for b in summ.get("by_currency", [])}
-
-    def same(a, b):
-        return set(a) == set(b) and all(a[k][0] == b[k][0] and abs(a[k][1] - b[k][1]) < 0.01 for k in a)
-
-    summary_ok = summ.get("count") == len(expected) and same(headline, exp_cur) and all(same(t, exp_cur) for t in tables.values())
-    passed = amounts_ok and summary_ok
+    tables = {}
+    valid = True
+    for name, field in (("by_currency", None), ("by_age", "bucket"),
+                        ("by_status", "status"), ("by_customer", "party_id")):
+        actual = {}
+        for item in summ.get(name, []):
+            key = (item.get(field), item.get("currency")) if field else item.get("currency")
+            # A duplicate group must not overwrite another group and earn a pass.
+            if key in actual or type(item.get("count")) is not int:
+                valid = False
+            try:
+                value = money(item.get("unallocated"))
+                if value is None:
+                    valid = False
+                actual[key] = item.get("count"), value
+            except ValueError:
+                valid = False
+        tables[name] = actual
+    summary_ok = (valid and type(summ.get("count")) is int and summ["count"] == len(expected)
+                  and all(tables[name] == groups[name] for name in groups))
+    exp_cur = groups["by_currency"]
+    headline = tables["by_currency"]
     note = "; no incoming payments on this instance (expected, instructor 7 Nov)" if not raw else ""
-    return _ok(passed, f"verifier=payment_recount; rows expected={len(expected)} got={len(got)}; "
-                       f"unallocated by currency expected={_fmt(exp_cur)} got={_fmt(_by_currency((r.get('currency'), r['unallocated']) for r in rows))}; "
-                       f"summary_adds_up={summary_ok} (by_currency={_fmt(headline)}); "
-                       f"{_diff(set(expected), set(got))}{note}")
+    return _ok(amounts_ok and summary_ok,
+               f"verifier=payment_recount; rows expected={len(expected)} got={len(got)}; "
+               f"unallocated by currency expected={_fmt(exp_cur)} "
+               f"got={_fmt(_by_currency((r.get('currency'), r['unallocated']) for r in rows))}; "
+               f"summary_adds_up={summary_ok}; exact_groups={summary_ok} (by_currency={_fmt(headline)}); "
+               f"{_diff(set(expected), set(got))}{note}")
 
 
 def unapplied_excludes_outgoing(ctx):

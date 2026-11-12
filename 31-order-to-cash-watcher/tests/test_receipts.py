@@ -9,7 +9,7 @@ D = date(2026, 11, 15)
 
 
 def legacy(number, customer, amount, status="paid", invoices=None):
-    return {"payment_number": number, "customer_id": customer, "amount": amount, "status": status, "date": "2026-10-01",
+    return {"currency_code": "INR", "payment_number": number, "customer_id": customer, "amount": amount, "status": status, "date": "2026-10-01",
             "invoices": invoices if invoices is not None else [{"invoice_id": f"INV-{number}", "payment": amount}]}
 
 
@@ -21,7 +21,7 @@ def v1(number, customer, amount, status="paid", allocs=None, history=None, consi
                    + [{"event_type": "applied", "event_id": f"A{i}", "target_entity": a["target_entity"],
                        "target_id": a["target_id"], "amount": a["amount"]} for i, a in enumerate(allocs)]
                    ) if status == "paid" else []
-    return {"payment_number": number, "customer_id": customer, "amount": amount, "status": status, "date": "2026-10-05",
+    return {"currency_code": "INR", "payment_number": number, "customer_id": customer, "amount": amount, "status": status, "date": "2026-10-05",
             "allocation_evidence_version": 1, "allocation_consideration": amount if consideration is None else consideration,
             "applied_allocations": allocs, "allocation_history": history}
 
@@ -107,20 +107,21 @@ class History(unittest.TestCase):
 
     def test_hints(self):
         h = R.history_by_customer(self.RECEIPTS)
-        self.assertEqual(R.hint_for({"party_id": "C1", "unallocated": 250.0}, h)["same_amount_receipts"], ["N1"])
-        self.assertEqual(R.hint_for({"party_id": "C1", "unallocated": 250.0}, h)["hint"], "same_amount")
+        self.assertEqual(R.hint_for({"currency": "INR", "party_id": "C1", "unallocated": 250.0}, h)["same_amount_receipts"], ["N1"])
+        self.assertEqual(R.hint_for({"currency": "INR", "party_id": "C1", "unallocated": 250.0}, h)["hint"], "same_amount")
         # a draft receipt with the same amount is not money already applied
-        self.assertEqual(R.hint_for({"party_id": "C1", "unallocated": 999.0}, h)["hint"], "has_history")
-        self.assertEqual(R.hint_for({"party_id": "C9", "unallocated": 1.0}, h),
+        self.assertEqual(R.hint_for({"currency": "INR", "party_id": "C1", "unallocated": 999.0}, h)["hint"], "has_history")
+        self.assertEqual(R.hint_for({"currency": "INR", "party_id": "C9", "unallocated": 1.0}, h),
                          {"hint": "no_history", "receipts_paid": 0, "receipts_applied_total": 0.0,
-                          "last_receipt_date": None, "same_amount_receipts": []})
+                          "last_receipt_date": None, "same_amount_receipts": [],
+                          "receipts_currency": "INR", "receipts_applied_by_currency": []})
 
     def test_same_amount_on_the_live_receipt_shape(self):
         # live v1 rows, 12 Nov: amount null, value in allocation_consideration, REC-… in number, payment_number empty
         live = v1(None, "C7", 245.92)
         live.update({"amount": None, "number": "REC-2026-00141", "id": "9b3654f9"})
         h = R.history_by_customer([live])
-        hint = R.hint_for({"party_id": "C7", "unallocated": 245.92}, h)
+        hint = R.hint_for({"currency": "INR", "party_id": "C7", "unallocated": 245.92}, h)
         self.assertEqual(hint["hint"], "same_amount")
         self.assertEqual(hint["same_amount_receipts"], ["REC-2026-00141"])
 
@@ -253,9 +254,9 @@ class Build(unittest.TestCase):
         data = {"Payment": Section3.PAYMENTS, "PaymentReceived": [legacy("R1", "P2", 300.0)]}
         rep = report.build(FakeClient({"SalesOrder.list", "Payment.list", "PaymentReceived.list"}, data), D, instance="t")
         rows = {r["number"]: r for r in rep["sections"]["payments_not_applied"]["rows"]}
-        self.assertEqual(rows["C"]["hint"], "same_amount")
+        self.assertEqual(rows["C"]["hint"], "has_history")  # Payment currency is unknown here.
         self.assertEqual(rows["A"]["hint"], "no_history")
-        self.assertIn("check: same amount", report.to_markdown(rep))
+        self.assertIn("has history", report.to_markdown(rep))
 
     def test_empty_instance_says_expected(self):
         rep = report.build(FakeClient({"SalesOrder.list", "Payment.list"}, {}), D, instance="keystone")

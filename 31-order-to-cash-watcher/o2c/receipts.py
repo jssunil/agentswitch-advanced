@@ -4,8 +4,8 @@ Instructor, 7 Nov: Payment rows of type `receive` are money in that is not yet a
 to match). PaymentReceived rows are receipts already applied, each carrying an allocation to one
 invoice. The two are related only through the customer: Payment.party_id = PaymentReceived.customer_id.
 
-Our login cannot read PaymentReceived yet (BUG-31-001). Everything here is a pure function over
-rows, so it is tested on made-up rows and switches on in the report as soon as
+Auditor access was enabled on 11 Nov (BUG-31-001). Everything here is a pure function over
+rows, so it is tested on made-up rows and switches on in the report when
 `PaymentReceived.list` appears in the tool list.
 
 Field names come from the PaymentReceived schema snapshot. Two models exist:
@@ -15,6 +15,8 @@ Field names come from the PaymentReceived schema snapshot. Two models exist:
 The schema's computed `total_applied` is None on paid legacy receipts, so we never rely on it:
 the applied amount is summed from the child rows, and only `paid` receipts count.
 """
+
+from .values import currency_code, money, money_sum
 
 PAID = "paid"
 TOLERANCE = 0.01
@@ -113,11 +115,17 @@ def history_by_customer(receipts):
         cid = r.get("customer_id")
         if not cid:
             continue
-        h = out.setdefault(cid, {"receipts": 0, "paid": [], "applied_total": 0.0, "last_date": None})
+        h = out.setdefault(cid, {"receipts": 0, "paid": [], "applied_total": None, "by_currency": {}, "last_date": None})
         h["receipts"] += 1
         if counts_as_applied(r):
             h["paid"].append(r)
-            h["applied_total"] = round(h["applied_total"] + applied_amount(r), 2)
+            # Unknown currency is its own bucket, never merged into known money.
+            cur = receipt_currency(r)
+            previous = h["by_currency"].get(cur, 0)
+            h["by_currency"][cur] = (money_sum([money(previous), money(applied_amount(r))])
+                                      if cur is not None else None)
+            h["applied_total"] = (next(iter(h["by_currency"].values()))
+                                  if len(h["by_currency"]) == 1 and cur is not None else None)
             d = str(r.get("date") or "")[:10] or None
             if d and (h["last_date"] is None or d > h["last_date"]):
                 h["last_date"] = d
@@ -125,7 +133,7 @@ def history_by_customer(receipts):
 
 
 HINTS = {
-    "same_amount": "same customer and amount already recorded as an applied receipt; check before applying",
+    "same_amount": "same customer, currency and amount already recorded as an applied receipt; check before applying",
     "has_history": "customer has applied receipts; match against their open invoices",
     "no_history": "no applied receipts for this customer",
     "unknown": "receipt history is incomplete; no absence or total can be verified",
@@ -147,11 +155,24 @@ def receipt_label(receipt):
     return receipt.get("number") or receipt.get("payment_number") or receipt.get("id") or "?"
 
 
+def receipt_currency(receipt):
+    """Read explicit currency only; missing currency must never imply a match."""
+    return currency_code(receipt.get("currency_code")) or currency_code(receipt.get("currency"))
+
+
 def hint_for(payment_row, history, tolerance=TOLERANCE):
     """Receipt-history facts for one unapplied payment row (from report.payments_not_applied)."""
-    h = history.get(payment_row.get("party_id")) or {"receipts": 0, "paid": [], "applied_total": 0.0, "last_date": None}
+    h = history.get(payment_row.get("party_id")) or {"receipts": 0, "paid": [], "applied_total": None, "by_currency": {}, "last_date": None}
     amount = _money(payment_row.get("unallocated"))
-    same = sorted(receipt_label(r) for r in h["paid"] if abs(receipt_value(r) - amount) <= tolerance)
+    cur = currency_code(payment_row.get("currency"))
+    same = sorted(receipt_label(r) for r in h["paid"]
+                  if cur is not None and receipt_currency(r) == cur
+                  and abs(receipt_value(r) - amount) <= tolerance)
+    totals = [{"currency": code, "applied_total": total}
+              for code, total in sorted(h["by_currency"].items(), key=lambda item: item[0] or "~")]
+    # Retain the scalar key for consumers, scoped explicitly to this payment's currency.
+    total = h["by_currency"].get(cur, 0.0) if cur is not None else None
     key = "same_amount" if same else "has_history" if h["paid"] else "no_history"
-    return {"hint": key, "receipts_paid": len(h["paid"]), "receipts_applied_total": h["applied_total"],
+    return {"hint": key, "receipts_paid": len(h["paid"]), "receipts_applied_total": total, "receipts_currency": cur,
+            "receipts_applied_by_currency": totals,
             "last_receipt_date": h["last_date"], "same_amount_receipts": same}

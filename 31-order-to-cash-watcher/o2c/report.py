@@ -311,8 +311,13 @@ def payments_summary(rows):
     }
 
 
-def add_receipt_hints(rows, receipts):
+def add_receipt_hints(rows, receipts, currencies=None):
     """Attach each unapplied payment's customer receipt history (PaymentReceived) to its row."""
+    # Use the report's documented record/customer/company precedence for receipt currency.
+    receipts = [dict(r) for r in receipts]
+    for receipt in receipts:
+        receipt["currency"], receipt["currency_source"] = resolve_currency(
+            receipts_mod.receipt_currency(receipt), receipt.get("customer_id"), receipt.get("company_id"), currencies)
     history = receipts_mod.history_by_customer(receipts)
     for r in rows:
         r.update(receipts_mod.hint_for(r, history))
@@ -458,7 +463,7 @@ def build(client, report_date=None, days=7, instance=None, currencies=None):
     if "PaymentReceived.list" in names:
         receipt_issues = []
         source_receipts = client.list_all("PaymentReceived")
-        add_receipt_hints(pay_rows, validated_receipts(source_receipts, receipt_issues))
+        add_receipt_hints(pay_rows, validated_receipts(source_receipts, receipt_issues), currencies)
         if receipt_issues:
             for row in pay_rows:
                 if row.get("hint") == "no_history":

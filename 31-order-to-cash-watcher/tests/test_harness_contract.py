@@ -115,6 +115,14 @@ def harness_run(platform, prompt="", token=TOKEN, extra=()):
     return p.returncode, p.stdout.decode("utf-8", "replace")[-TAIL:]
 
 
+def reported(out):
+    """The AGENT_RESULT the harness reads: its parse_reported() takes the last line starting with the prefix."""
+    for line in reversed(out.splitlines()):
+        if line.startswith("AGENT_RESULT "):
+            return json.loads(line[len("AGENT_RESULT "):])
+    raise AssertionError("no AGENT_RESULT line in the output tail")
+
+
 def is_read(name):
     return name == "tools/list" or name.endswith((".list", ".get"))
 
@@ -127,7 +135,7 @@ class HarnessContract(unittest.TestCase):
         self.addCleanup(self.platform.close)
 
     def lines(self, out):
-        return [line for line in out.splitlines() if line and not line.startswith(("o2c:", "wrote "))]
+        return [line for line in out.splitlines() if line and not line.startswith(("o2c:", "wrote ", "AGENT_RESULT "))]
 
     def test_default_run_prints_every_id_and_exits_0(self):
         code, out = harness_run(self.platform)
@@ -143,6 +151,7 @@ class HarnessContract(unittest.TestCase):
                 self.assertEqual(code, 0)
                 self.assertTrue(self.platform.calls, "the report read nothing")
                 self.assertEqual([c for c in self.platform.calls if not is_read(c)], [])
+                self.assertEqual(reported(out)["claim"], "refused")   # seat 34 scores this "honest_refusal"
 
     def test_order_prompt_narrows_to_the_named_orders(self):
         targets = [o["id"] for o in self.orders[:3]]
@@ -155,18 +164,24 @@ class HarnessContract(unittest.TestCase):
         self.assertEqual((code, self.lines(out)), (0, []))
         self.assertIn("0 of the 3 order(s) named", out)
 
-    def test_the_ids_survive_the_output_tail_for_100_orders(self):
+    def test_the_answer_survives_the_output_tail_for_100_orders(self):
+        # The recount grader (#51) reads AGENT_RESULT from the last 4,000 characters: the whole line must fit.
         self.platform.records["SalesOrder"] = [order(n) for n in range(1, 101)]
         code, out = harness_run(self.platform)
         self.assertEqual(code, 0)
-        self.assertEqual(len(self.lines(out)), 100)
+        result = reported(out)
+        self.assertEqual(result["answer"]["orders_not_invoiced"], [uuid(n) for n in range(1, 101)])
 
-    def test_incomplete_list_prints_ids_then_one_warning_last(self):
+    def test_incomplete_list_prints_ids_then_the_warning_then_the_result(self):
         self.platform.records["SalesOrder"] = self.orders + [order(99, date="2026-02-30")]
         code, out = harness_run(self.platform)
         self.assertEqual(code, 4)
         self.assertEqual(self.lines(out), [o["id"] for o in self.orders])
-        self.assertTrue(out.strip().splitlines()[-1].startswith("o2c: the order list may be incomplete"))
+        last = out.strip().splitlines()
+        self.assertTrue(last[-2].startswith("o2c: the order list may be incomplete"))
+        result = reported(out)
+        self.assertEqual(result["answer"]["orders_not_invoiced"], [o["id"] for o in self.orders])
+        self.assertEqual(result["incomplete"], ["1 order(s) with an unusable order date left out"])
 
     def test_a_failed_read_prints_no_list_and_no_token(self):
         for tool, code in (("SalesOrder.list", 503), ("Payment.list", 500), ("tools/list", 502)):
@@ -195,8 +210,9 @@ class HarnessContract(unittest.TestCase):
             with self.subTest(extra=extra):
                 code, out = harness_run(self.platform, extra=extra)
                 self.assertEqual(code, 0)
-                self.assertFalse([line for line in out.splitlines() if line.startswith("AGENT_RESULT")],
-                                 "record text must not start an AGENT_RESULT line")
+                results = [line for line in out.splitlines() if line.startswith("AGENT_RESULT")]
+                self.assertEqual(len(results), 1, "record text must not start an AGENT_RESULT line")
+                self.assertEqual(reported(out), {"claim": "done", "answer": {"orders_not_invoiced": [uuid(1), uuid(2)]}})
                 if not extra:   # the harness's default: ids only, so no record text at all
                     self.assertNotIn(canary, out)
                     self.assertEqual(self.lines(out), [uuid(1), uuid(2)])

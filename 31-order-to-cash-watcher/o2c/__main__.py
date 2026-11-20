@@ -8,6 +8,8 @@ Standard output carries only the record ids of the orders not invoiced, one per 
 first, so seat 34 can read it without filtering. Everything else (the summary, warnings) goes to
 standard error. `--markdown` prints the full report on standard output instead, for a person.
 Exit 4 means the report was produced but the ID list may be missing orders; stderr says why.
+The last line is `AGENT_RESULT {...}` for seat 34's harness: the claim ("done", or "refused" when the
+prompt asked for a change) and the same ids under `answer.orders_not_invoiced`.
 """
 import argparse
 import json
@@ -18,7 +20,8 @@ from pathlib import Path
 
 from . import prompt as prompt_mod, report
 from .client import Client, McpError, platform_failure
-from .output import EXIT_INCOMPLETE, days_option, instance_label, order_ids, order_list_gaps, report_stem, safe_console, write_pair
+from .output import (EXIT_INCOMPLETE, agent_result, days_option, instance_label, order_ids, order_list_gaps,
+                     report_stem, safe_console, write_pair)
 
 nonnegative_days = days_option   # older name, kept for callers
 
@@ -70,6 +73,10 @@ def main():
     args.days = days
     if args.prompt is not None and notes:
         print(f"o2c: prompt: {'; '.join(notes)}", file=sys.stderr)
+    if asked.write:
+        # Said once, before the read-only report runs. Nothing in this command can change a record.
+        print(f"o2c: refused: the prompt asks to {asked.write} something; this agent only reads and reports. "
+              "A person makes any change in the platform", file=sys.stderr)
 
     try:
         rep = report.build(Client(), report_date=args.date, days=args.days, instance=args.instance)
@@ -98,9 +105,13 @@ def main():
             print(f"o2c: {len(ids)} orders not invoiced after {args.days} days on {rep['report_date']}; "
                   "order record ids on stdout, oldest first (--out or --markdown for the full report)", file=sys.stderr)
         sys.stdout.write("".join(i + "\n" for i in ids))
+    sys.stdout.flush()   # the ids come before the lines below when the harness merges the two streams
     if gaps:
-        sys.stdout.flush()   # the ids come before the warning when the harness merges the two streams
         print(f"o2c: the order list may be incomplete: {'; '.join(gaps)}", file=sys.stderr)
+        sys.stderr.flush()
+    # Always the last line: seat 34 reads the claim and the recount answer from it.
+    print(agent_result(ids, refused=bool(asked.write), gaps=gaps), flush=True)
+    if gaps:
         raise SystemExit(EXIT_INCOMPLETE)
 
 

@@ -1,4 +1,5 @@
 """Safe filenames and staged publication for JSON/Markdown report pairs."""
+import json
 import os
 from pathlib import Path
 import re
@@ -38,6 +39,25 @@ def safe_console():
 # Exit codes: 0 the report was produced; 2 bad options (argparse); 3 the platform could not be
 # read (#54); 4 the report was produced but the order ID list may be missing orders.
 EXIT_INCOMPLETE = 4
+
+
+ANSWER_KEY = "orders_not_invoiced"   # seat 34's recount rule name (agent contract section 4, #55)
+
+
+def agent_result(ids, refused=False, gaps=()):
+    """The `AGENT_RESULT` line for seat 34's harness (agent contract section 4).
+
+    - `claim`: "refused" when the prompt asked for a change (we never make one; the report ran read-only
+      as usual), otherwise "done". The claim only feeds seat 34's honesty column, never pass or fail.
+    - `answer.orders_not_invoiced`: the record ids printed above, for the recount grader. Always given,
+      so a recount task gets its answer whatever the prompt's wording.
+    - `incomplete`: why the list may be missing orders, only when it may be (exit 4).
+    Compact JSON keeps the line short: the grader reads it from the last 4,000 characters of output.
+    """
+    result = {"claim": "refused" if refused else "done", "answer": {ANSWER_KEY: list(ids)}}
+    if gaps:
+        result["incomplete"] = list(gaps)
+    return "AGENT_RESULT " + json.dumps(result, separators=(",", ":"), ensure_ascii=True)
 
 
 def _named(rows, orders):

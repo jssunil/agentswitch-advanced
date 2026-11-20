@@ -34,6 +34,20 @@ class Orders:
         return list(self.orders) if entity == "SalesOrder" else []
 
 
+def split_result(stdout):
+    """(stdout without the AGENT_RESULT line, the parsed result). Checks the contract on every run:
+    exactly one AGENT_RESULT line, it is the last line, and its answer is the id list printed above."""
+    lines = stdout.splitlines()
+    results = [i for i, line in enumerate(lines) if line.startswith("AGENT_RESULT ")]
+    assert len(results) == 1 and results[0] == len(lines) - 1, f"expected one AGENT_RESULT line, last: {lines[-3:]}"
+    result = json.loads(lines[-1][len("AGENT_RESULT "):])
+    body = lines[:-1]
+    ids = [line for line in body if not line.startswith("#")] if body and not body[0].startswith("#") else None
+    if ids is not None:   # the id list (not --markdown): the answer repeats it exactly
+        assert result["answer"]["orders_not_invoiced"] == ids, (result, ids)
+    return "".join(line + "\n" for line in body), result
+
+
 def run(orders, *extra):
     """(exit code, stdout, stderr, report JSON or None) of one CLI run on synthetic orders."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -48,7 +62,8 @@ def run(orders, *extra):
                 code = e.code
         path = Path(tmp) / f"synthetic-{D.isoformat()}.json"
         rep = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
-    return code, out.getvalue(), err.getvalue(), rep
+    stdout, run.result = split_result(out.getvalue())
+    return code, stdout, err.getvalue(), rep
 
 
 class OrderIdList(unittest.TestCase):

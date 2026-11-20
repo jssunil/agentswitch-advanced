@@ -17,6 +17,7 @@ import unittest
 from unittest.mock import patch
 
 from o2c import __main__ as cli
+from tests.test_order_ids import split_result
 
 D = date(2026, 11, 15)
 OPEN = ("unbilled", "partially_invoiced")
@@ -69,7 +70,7 @@ def run_cli(orders, days):
             code = 0
         except SystemExit as e:
             code = e.code
-    return code, out.getvalue().splitlines()
+    return code, split_result(out.getvalue())[0].splitlines()
 
 
 class RecountProperty(unittest.TestCase):

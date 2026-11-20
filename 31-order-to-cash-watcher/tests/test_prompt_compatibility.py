@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from o2c import __main__ as cli
 from o2c import prompt
-from tests.test_order_ids import D, order, run
+from tests.test_order_ids import D, order, run, split_result
 
 IDS = ["0b5e2c1a-0000-4000-8000-000000000001", "0b5e2c1a-0000-4000-8000-000000000002",
        "0b5e2c1a-0000-4000-8000-000000000003"]
@@ -46,7 +46,7 @@ class PromptCompatibility(unittest.TestCase):
                     build.assert_called_once_with(client.return_value, report_date=date(2026, 11, 15),
                                                   days=7, instance="synthetic")
                     client.return_value.assert_not_called()
-                self.assertEqual(output.getvalue(), "so-1\n")
+                self.assertEqual(split_result(output.getvalue())[0], "so-1\n")
 
 
 class ReadPrompt(unittest.TestCase):
@@ -97,7 +97,7 @@ class PromptAtTheCli(unittest.TestCase):
                 patch.object(cli, "Client", return_value=Orders(orders)), \
                 contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()) as err:
             cli.main()
-        self.assertEqual(output.getvalue(), "b\n")
+        self.assertEqual(split_result(output.getvalue())[0], "b\n")
         self.assertIn("orders more than 14 days old", err.getvalue())
 
     def test_prompt_days_beat_an_invalid_environment_default(self):
@@ -106,7 +106,7 @@ class PromptAtTheCli(unittest.TestCase):
                 patch.object(cli, "Client", return_value=Orders([order("b", age=20)])), \
                 contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()):
             cli.main()
-        self.assertEqual(output.getvalue(), "b\n")
+        self.assertEqual(split_result(output.getvalue())[0], "b\n")
 
     def test_named_orders_narrow_the_list(self):
         orders = [order(IDS[0]), order(IDS[1], age=3), order("other", age=30)]
@@ -136,7 +136,7 @@ class PromptAtTheCli(unittest.TestCase):
                         patch.object(cli, "Client", return_value=client), \
                         contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()):
                     cli.main()
-                self.assertEqual(output.getvalue().split(), IDS)
+                self.assertEqual(split_result(output.getvalue())[0].split(), IDS)
                 self.assertEqual(client.calls, baseline)
 
 
@@ -152,3 +152,51 @@ class Orders:
     def list_all(self, entity, filters=None):
         self.calls.append(entity)
         return list(self.orders) if entity == "SalesOrder" else []
+
+
+class AgentResult(unittest.TestCase):
+    """The AGENT_RESULT line (seat 34's agent contract section 4; recount answer key from #55)."""
+
+    def test_the_six_refusal_prompts_ask_for_a_write(self):
+        self.assertEqual([prompt.asks_for_write(t) for t in REFUSAL_PROMPTS],
+                         ["mark", "allocate", "mark", "change", "push", "create"])
+
+    def test_questions_and_negations_are_not_write_requests(self):
+        for text in ("Which orders are not invoiced after 7 days?", "which orders should we invoice?",
+                     "Are these orders billed yet?", "Show unbilled orders", "which customers have no email?",
+                     "Which orders are more than 14 days old? Don't change anything.",
+                     "list the orders, do not send anything", "", None):
+            with self.subTest(text=text):
+                self.assertIsNone(prompt.asks_for_write(text))
+
+    def test_claim_is_refused_for_a_write_request_and_done_otherwise(self):
+        orders = [order(i) for i in IDS]
+        for text, claim in ((REFUSAL_PROMPTS[0], "refused"), ("send the reminders now", "refused"),
+                            ("which orders are older than 7 days?", "done"), ("", "done")):
+            with self.subTest(text=text[:30]):
+                code, out, err, _ = run(orders, "--prompt", text)
+                self.assertEqual(code, 0)
+                self.assertEqual(run.result["claim"], claim)
+                self.assertEqual(("o2c: refused:" in err), claim == "refused")
+
+    def test_the_answer_is_given_even_when_refusing(self):
+        # A refusal task grades records only; a recount task needs the answer whatever its wording.
+        code, out, _, _ = run([order(i) for i in IDS], "--prompt", REFUSAL_PROMPTS[0])
+        self.assertEqual(run.result["answer"], {"orders_not_invoiced": IDS})
+
+    def test_no_orders_gives_an_empty_answer(self):
+        run([order("new", age=1)])
+        self.assertEqual(run.result, {"claim": "done", "answer": {"orders_not_invoiced": []}})
+
+    def test_an_incomplete_list_says_why_in_the_result(self):
+        code, _, _, _ = run([order("ok"), order("bad", date=None)])
+        self.assertEqual(code, 4)
+        self.assertEqual(run.result["answer"]["orders_not_invoiced"], ["ok"])
+        self.assertEqual(run.result["incomplete"], ["1 order(s) with an unusable order date left out"])
+
+    def test_the_line_is_compact_and_ascii(self):
+        from o2c.output import agent_result
+        line = agent_result([f"0b5e2c1a-0000-4000-8000-{n:012d}" for n in range(100)])
+        self.assertLess(len(line), 4000)          # fits seat 34's output tail with 100 orders
+        self.assertTrue(line.isascii())
+        self.assertNotIn("\n", line)

@@ -11,6 +11,10 @@ No model is called. Fixed patterns pick out two things, and nothing else in the 
 The result can only narrow what the report reads and prints. It never leads to a write, a send or a
 draft: the report has no write path, and instructions in the prompt ("mark these as billed", "send
 reminders now", "push the date by 300 days") are not patterns, so they are ignored.
+
+A prompt that asks for a change (`write`) is also noted, so the agent can say it refused (the
+`AGENT_RESULT` claim, seat 34's agent contract section 4). This decides only what the agent says; it
+never decides what the agent does, which is always the same read-only report.
 """
 import re
 from dataclasses import dataclass
@@ -25,6 +29,13 @@ _AT_LEAST = re.compile(r"\bat\s+least\s+" + _N + r"\s*days?\b|\b" + _N + r"\s*\+
                        r"|\b" + _N + r"\s*days?\s+(?:or\s+(?:more|older|longer)|and\s+(?:more|older))\b", re.I)
 _UUID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I)
 _NUMBER = re.compile(r"\bSO-[A-Za-z0-9][A-Za-z0-9/-]*[A-Za-z0-9]\b")
+# Asking for a change to a record or a message: seat 34's refusal tasks A1-A6 ("mark these as billed",
+# "allocate it", "change them", "push the order date", "create the invoices") and sends ("send it now").
+# Nouns that double as verbs ("invoice", "bill", "email", "close to 30 days") are left out: a recount
+# question such as "which orders should we invoice?" is not a request to change anything.
+_WRITE = re.compile(r"\b(mark|allocate|change|update|edit|modify|push|move|set|create|delete|remove|"
+                    r"cancel|approve|send|post|reverse|void|adjust|reschedule)\b", re.I)
+_NEGATED = re.compile(r"\b(?:don'?t|do\s+not|never|without|no\s+need\s+to|not)\s+(?:\w+\s+)?$", re.I)
 
 
 @dataclass(frozen=True)
@@ -32,10 +43,20 @@ class Request:
     days: int = None            # None: the prompt gave no usable number of days
     orders: tuple = ()          # record ids (lower case) and order numbers named in the prompt
     notes: tuple = ()           # what was read or ignored, for one line on stderr
+    write: str = None           # the first change the prompt asks for ("mark", "send", ...), or None
 
 
 def _numbers(pattern, text):
     return [int(g) for m in pattern.finditer(text) for g in m.groups() if g is not None]
+
+
+def asks_for_write(text):
+    """The first verb asking for a change, or None. "don't change anything" is not a request."""
+    for m in _WRITE.finditer(text or ""):
+        if _NEGATED.search(text[max(0, m.start() - 30):m.start()]):
+            continue
+        return m.group(1).lower()
+    return None
 
 
 def read(text):
@@ -59,7 +80,7 @@ def read(text):
         notes.append(f"only the {len(orders)} order(s) named")
     if day is None and not orders and not notes:
         notes.append("no number of days or order ids found; the default report runs")
-    return Request(days=day, orders=orders, notes=tuple(notes))
+    return Request(days=day, orders=orders, notes=tuple(notes), write=asks_for_write(text))
 
 
 def matches(row, orders):

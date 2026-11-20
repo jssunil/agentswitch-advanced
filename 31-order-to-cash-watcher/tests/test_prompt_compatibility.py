@@ -200,3 +200,39 @@ class AgentResult(unittest.TestCase):
         self.assertLess(len(line), 4000)          # fits seat 34's output tail with 100 orders
         self.assertTrue(line.isascii())
         self.assertNotIn("\n", line)
+
+
+class PromptBoundaries(unittest.TestCase):
+    def test_smallest_numbers_of_days(self):
+        self.assertEqual([prompt.read(t).days for t in ("older than 0 days", "at least 1 day", "older than 1 day")], [0, 0, 1])
+
+    def test_at_least_zero_days_is_ignored(self):
+        asked = prompt.read("orders at least 0 days old")
+        self.assertIsNone(asked.days)
+        self.assertIn("days ignored: out of range", asked.notes)
+
+    def test_the_largest_number_of_days(self):
+        self.assertEqual(prompt.read(f"older than {prompt.MAX_DAYS} days").days, prompt.MAX_DAYS)
+        self.assertIsNone(prompt.read(f"older than {prompt.MAX_DAYS + 1} days").days)
+        self.assertIsNone(prompt.read("older than 10000 days").days)   # five digits never match
+
+    def test_the_same_n_said_two_ways_is_not_a_conflict(self):
+        self.assertEqual(prompt.read("more than 14 days and at least 15 days").days, 14)
+
+    def test_ids_and_numbers_at_their_edges(self):
+        self.assertEqual(prompt.read("check SO-2026-00012.").orders, ("SO-2026-00012",))
+        self.assertEqual(prompt.read(f"x{IDS[0]} and {IDS[1]}abc").orders, ())   # glued to other text: not an id
+
+    def test_past_tense_and_plurals_are_not_write_requests(self):
+        for text in ("orders marked as billed?", "Any updates on unbilled orders?", "changes since Monday?",
+                     "which orders were created last week?"):
+            with self.subTest(text=text):
+                self.assertIsNone(prompt.asks_for_write(text))
+
+    def test_a_very_long_prompt_is_read_quickly(self):
+        import time
+        text = ("please look at the orders and " * 3500) + "older than 14 days " + IDS[0]
+        started = time.perf_counter()
+        asked = prompt.read(text)
+        self.assertLess(time.perf_counter() - started, 1.0)
+        self.assertEqual((asked.days, asked.orders), (14, (IDS[0],)))

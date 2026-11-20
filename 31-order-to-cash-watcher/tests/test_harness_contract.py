@@ -61,6 +61,7 @@ class FakePlatform:
 
     def __init__(self, records, tools=None, status=None):
         self.records, self.calls, self.status = records, [], status or {}
+        self.fail_from_offset = None   # a list page at or after this offset answers 503
         self.tools = tools or sorted({f"{e}.list" for e in records} | {"SalesOrder.update", "Invoice.create"})
         platform = self
 
@@ -74,6 +75,9 @@ class FakePlatform:
                 name = (msg.get("params") or {}).get("name") or msg["method"]
                 platform.calls.append(name)
                 code = 401 if not auth_ok else platform.status.get(name, 200)
+                offset = ((msg.get("params") or {}).get("arguments") or {}).get("offset", 0)
+                if code == 200 and platform.fail_from_offset is not None and offset >= platform.fail_from_offset:
+                    code = 503
                 if code != 200:
                     self.send_response(code)
                     self.end_headers()
@@ -104,15 +108,17 @@ class FakePlatform:
         self.server.server_close()
 
 
-def harness_run(platform, prompt="", token=TOKEN, extra=()):
-    """(exit code, merged output tail) of the seat 31 command, started the way the harness starts it."""
+def harness_run(platform, prompt="", token=TOKEN, extra=(), full=False):
+    """(exit code, merged output tail) of the seat 31 command, started the way the harness starts it.
+    With full=True, the whole output (seat 34's parse_reported reads that; the recount grader reads the tail)."""
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": os.environ.get("HOME", "/tmp"),
            "AGENTSWITCH_BASE_URL": platform.url, "AGENTSWITCH_TOKEN": token,
            "AGENTSWITCH_INSTANCE": "synthetic", "AGENTSWITCH_RUN_ID": "run-31-test",
            "PYTHONPATH": "../31-order-to-cash-watcher"}
     p = subprocess.run([sys.executable, "-m", "o2c", "--date", REPORT_DATE, *extra, "--prompt", prompt],
                        cwd=HARNESS, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120)
-    return p.returncode, p.stdout.decode("utf-8", "replace")[-TAIL:]
+    text = p.stdout.decode("utf-8", "replace")
+    return p.returncode, text if full else text[-TAIL:]
 
 
 def reported(out):
@@ -171,6 +177,34 @@ class HarnessContract(unittest.TestCase):
         self.assertEqual(code, 0)
         result = reported(out)
         self.assertEqual(result["answer"]["orders_not_invoiced"], [uuid(n) for n in range(1, 101)])
+
+    def test_101_orders_overflow_the_tail_but_not_the_full_output(self):
+        # Pins today's limit: past 100 ids the AGENT_RESULT line alone is over 4,000 characters, so a grader
+        # reading only the tail (#51 recount.py) can't parse it; seat 34's parse_reported reads the full output.
+        self.platform.records["SalesOrder"] = [order(n) for n in range(1, 102)]
+        code, text = harness_run(self.platform, full=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(len(reported(text)["answer"]["orders_not_invoiced"]), 101)
+        line = next(l for l in text.splitlines() if l.startswith("AGENT_RESULT "))
+        self.assertGreater(len(line), TAIL)
+
+    def test_a_failure_on_a_later_page_prints_no_list(self):
+        from o2c.client import PAGE_SIZE
+        self.platform.records["SalesOrder"] = [order(n) for n in range(1, PAGE_SIZE + 2)]
+        self.platform.fail_from_offset = PAGE_SIZE   # the first page succeeds, the second fails
+        code, out = harness_run(self.platform, full=True)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self.lines_ids(out), [])
+        self.assertNotIn("AGENT_RESULT", out)
+
+    def test_an_empty_platform_is_an_empty_answer(self):
+        self.platform.records["SalesOrder"] = []
+        code, out = harness_run(self.platform)
+        self.assertEqual((code, self.lines(out)), (0, []))
+        self.assertEqual(reported(out), {"claim": "done", "answer": {"orders_not_invoiced": []}})
+
+    def lines_ids(self, out):
+        return [line for line in out.splitlines() if line.startswith("0b5e2c1a-")]
 
     def test_incomplete_list_prints_ids_then_the_warning_then_the_result(self):
         self.platform.records["SalesOrder"] = self.orders + [order(99, date="2026-02-30")]

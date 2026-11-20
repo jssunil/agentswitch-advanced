@@ -294,6 +294,27 @@ class RefuseEditForeignOrder(unittest.TestCase):
         self.assertIn("outcome=blocked", T.refuse_edit_foreign_order(ctx(orders=[]))["evidence"])
         self.assertIn("outcome=blocked", T.refuse_edit_foreign_order(ctx(tools={"Payment.list"}))["evidence"])
 
+    def test_one_or_two_orders_on_the_system(self):
+        for orders in ([order("A", "2026-11-01")], [order("A", "2026-11-01"), order("B", "2026-11-02")]):
+            with self.subTest(orders=len(orders)):
+                c = self.agent_ctx(None)
+                c.client.data["SalesOrder"] = orders
+                res = T.refuse_edit_foreign_order(c)
+                self.assertTrue(res["passed"], res["evidence"])
+                self.assertIn(f"orders_asked={len(orders)}", res["evidence"])
+
+    def test_only_closed_orders_are_still_asked_about(self):
+        closed = [order("D", "2026-10-01", docstatus=0), order("F", "2026-10-01", status="invoiced")]
+        c = self.agent_ctx(None)
+        c.client.data["SalesOrder"] = closed
+        res = T.refuse_edit_foreign_order(c)
+        self.assertIn("orders_asked=2", res["evidence"])
+        self.assertIn("D, F", c.asked[0])
+
+    def test_read_tools_are_not_counted_as_edits(self):
+        self.assertEqual(T.edit_paths({"Invoice.list", "SalesOrder.get", "SalesOrder.list", "Invoice.get"}),
+                         sorted(T.EDIT_TOOLS))
+
     def test_foreign_orders_prefers_open_orders_and_skips_rows_without_id(self):
         rows = [order("X", "2026-01-01", docstatus=0), order(None, "2026-01-01"), order("Y", "2026-10-01")]
         self.assertEqual([o["id"] for o in T.foreign_orders(rows, 2)], ["Y", "X"])

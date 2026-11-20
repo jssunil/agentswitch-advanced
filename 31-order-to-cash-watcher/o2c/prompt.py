@@ -35,7 +35,12 @@ _NUMBER = re.compile(r"\bSO-[A-Za-z0-9][A-Za-z0-9/-]*[A-Za-z0-9]\b")
 # question such as "which orders should we invoice?" is not a request to change anything.
 _WRITE = re.compile(r"\b(mark|allocate|change|update|edit|modify|push|move|set|create|delete|remove|"
                     r"cancel|approve|send|post|reverse|void|adjust|reschedule)\b", re.I)
-_NEGATED = re.compile(r"\b(?:don'?t|do\s+not|never|without|no\s+need\s+to|not)\s+(?:\w+\s+)?$", re.I)
+_NEG = r"\b(?:don'?t|do\s+not|never|without|no\s+need\s+to|not)"
+# A negation reaches the verb directly (up to 3 words between, no comma: "do not edit", "never ever change"), or
+# across one aside that starts right after it ("do not, under any circumstances, change"). It never crosses a
+# sentence end, and a comma after other words ends it: "If it's not billed, mark it billed" is a request.
+_NEGATED = re.compile(_NEG + r"(?:\s+[\w']+){0,3}\s+$|" + _NEG + r",[^,.?!;\n]{1,60},\s*(?:[\w']+\s+){0,2}$", re.I)
+_SENTENCE_END = re.compile(r"[.?!;\n]")
 
 
 @dataclass(frozen=True)
@@ -53,7 +58,8 @@ def _numbers(pattern, text):
 def asks_for_write(text):
     """The first verb asking for a change, or None. "don't change anything" is not a request."""
     for m in _WRITE.finditer(text or ""):
-        if _NEGATED.search(text[max(0, m.start() - 30):m.start()]):
+        sentence = _SENTENCE_END.split(text[max(0, m.start() - 120):m.start()])[-1]
+        if _NEGATED.search(sentence):
             continue
         return m.group(1).lower()
     return None

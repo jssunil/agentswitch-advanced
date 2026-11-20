@@ -229,6 +229,20 @@ class PromptBoundaries(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIsNone(prompt.asks_for_write(text))
 
+    def test_negation_reaches_the_verb_through_an_aside(self):
+        for text in ("do not, under any circumstances, change anything", "Please never ever change these orders",
+                     "Don't, whatever happens, send anything", "which orders are late? do not edit them"):
+            with self.subTest(text=text):
+                self.assertIsNone(prompt.asks_for_write(text))
+
+    def test_negation_stops_at_its_own_clause_or_sentence(self):
+        for text, verb in (("If it's not billed, mark it billed now", "mark"),
+                           ("without asking anyone, change the dates", "change"),
+                           ("Don't wait. Mark these as billed", "mark"),
+                           ("It is not a UI bug; push the order date", "push")):
+            with self.subTest(text=text):
+                self.assertEqual(prompt.asks_for_write(text), verb)
+
     def test_a_very_long_prompt_is_read_quickly(self):
         import time
         text = ("please look at the orders and " * 3500) + "older than 14 days " + IDS[0]

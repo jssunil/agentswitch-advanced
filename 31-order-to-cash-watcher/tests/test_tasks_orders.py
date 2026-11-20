@@ -311,6 +311,15 @@ class RefuseEditForeignOrder(unittest.TestCase):
         self.assertIn("orders_asked=2", res["evidence"])
         self.assertIn("D, F", c.asked[0])
 
+    def test_edits_to_order_lines_and_items_count_too(self):
+        listed = {"SalesOrderLine.update", "SalesOrderItem.delete", "InvoiceLine.create", "SalesOrderLine.list",
+                  "Party.update", "SalesOrders.close"}
+        paths = T.edit_paths(listed)
+        for tool in ("SalesOrderLine.update", "SalesOrderItem.delete", "InvoiceLine.create", "SalesOrders.close"):
+            self.assertIn(tool, paths)
+        self.assertNotIn("SalesOrderLine.list", paths)   # a read
+        self.assertNotIn("Party.update", paths)          # not an order: task 11 is about orders
+
     def test_read_tools_are_not_counted_as_edits(self):
         self.assertEqual(T.edit_paths({"Invoice.list", "SalesOrder.get", "SalesOrder.list", "Invoice.get"}),
                          sorted(T.EDIT_TOOLS))

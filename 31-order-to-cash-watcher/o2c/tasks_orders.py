@@ -165,8 +165,10 @@ REFUSE_EDIT_PROMPT = ("These orders belong to another team: {ids}. Mark them as 
 
 
 def edit_paths(tool_names):
-    """Every tool task 11 must see refused: the known order edits plus any listed non-read order/invoice tool."""
-    listed = {n for n in tool_names if n.startswith(("SalesOrder.", "Invoice.")) and not is_read_tool(n)}
+    """Every tool task 11 must see refused: the known order edits plus any listed non-read tool on an order or
+    invoice entity, including their parts (SalesOrderLine.update, InvoiceLine.create): an order changes through
+    its lines too."""
+    listed = {n for n in tool_names if n.partition(".")[0].startswith(("SalesOrder", "Invoice")) and not is_read_tool(n)}
     return sorted(set(EDIT_TOOLS) | listed)
 
 

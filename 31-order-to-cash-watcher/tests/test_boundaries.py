@@ -82,6 +82,21 @@ class Ids(unittest.TestCase):
         code, out, _, _ = run([order(0)])
         self.assertEqual((code, out, run.result["answer"]["orders_not_invoiced"]), (0, "0\n", ["0"]))
 
+    def test_an_empty_or_blank_id_is_not_printed_and_the_list_may_be_incomplete(self):
+        for blank in ("", "   "):
+            with self.subTest(id=repr(blank)):
+                code, out, err, _ = run([order("ok"), order(blank, age=9)])
+                self.assertEqual((code, out), (4, "ok\n"))
+                self.assertIn("1 order(s) without a record id left out", err)
+                self.assertEqual(run.result["answer"]["orders_not_invoiced"], ["ok"])
+
+    def test_a_repeated_id_is_printed_once_and_the_list_may_be_incomplete(self):
+        code, out, err, _ = run([order("dup", age=20), order("ok"), order("dup", age=9)])
+        self.assertEqual((code, out), (4, "dup\nok\n"))   # first place in report order (oldest first)
+        self.assertIn("1 order id(s) repeated in the source", err)
+        self.assertEqual(run.result["answer"]["orders_not_invoiced"], ["dup", "ok"])
+        self.assertIn("1 order id(s) repeated in the source; printed once", run.result["incomplete"])
+
     def test_a_non_ascii_id_is_printed_and_the_result_decodes_to_it(self):
         code, out, _, _ = run([order("बिक्री-1")])
         self.assertEqual((code, out), (0, "बिक्री-1\n"))

@@ -1,6 +1,6 @@
 """Run the daily exception report.
 
-    python -m o2c --days 7 --instance suryodaya --out reports/
+    python3 -m o2c --days 7 --instance suryodaya --out reports/
 
 Reads AGENTSWITCH_BASE_URL and AGENTSWITCH_TOKEN from the environment.
 """

@@ -7,7 +7,7 @@ Every task returns {"passed", "score", "evidence"}; `run()` adds the id
 
 Sunil's harness runner imports TASKS and run(). For a local check:
 
-    python -m o2c.tasks_payments --instance suryodaya --date 2026-11-07 [--out results-payments.json]
+    python3 -m o2c.tasks_payments --instance suryodaya --date 2026-11-07 [--out results-payments.json]
 
 Task 9 creates a draft, so it runs only on the harness copy (AGENTSWITCH_RUN_ID set) or with
 --allow-writes. It is never run against live data by default.

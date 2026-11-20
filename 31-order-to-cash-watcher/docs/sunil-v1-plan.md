@@ -7,17 +7,18 @@ Covers items 1 and 2 of the 18 Nov phase 2 plan, plus suite tasks 1–4 and 11, 
 ## Starting point
 
 - #54 (`seat31/deepak-v1`) merges first, planned for 22 Nov.
-- Tasks 1–4 are already written on `seat31/sunil-order-tasks`. Task 12 was dropped there (`9bc11b7`), because #54's `report_read_only` replaces it.
-- A trial merge of `seat31/sunil-order-tasks` onto #54 has one conflict, the usage lines in `o2c/drafts.py`'s docstring (keep #54's), and 358 offline tests pass.
+- Tasks 1–4 are commit 1 on this branch. Task 12 is left out, because #54's `report_read_only` replaces it.
+  (They were first written on `seat31/sunil-order-tasks`, now deleted.)
+- A trial merge of these tasks onto #54 had no conflict in the task files, and 358 offline tests pass.
 
-**Step 0 (not a commit):** after #54 merges, `git fetch upstream && git rebase upstream/main`, then bring over
-`seat31/sunil-order-tasks`.
+**Step 0 (not a commit):** after #54 merges, `git fetch upstream && git rebase upstream/main`, then switch
+`--days` in `o2c/tasks_orders.py` to #54's `output.days_option` and squash that into commit 1.
 
 ## Commits
 
 | # | Commit | Files | Notes |
 |---|---|---|---|
-| 1 | Suite tasks 1–4 (orders not invoiced) | `o2c/tasks_orders.py`, `tests/test_tasks_orders.py` | Squash `4334bd8` + `9bc11b7`, so task 12 never appears; fold in `fbdd435` (`python3` in run lines), keeping #54's docstring where they conflict. `--days` uses `output.days_option` |
+| 1 | Suite tasks 1–4 (orders not invoiced) — **done** | `o2c/tasks_orders.py`, `tests/test_tasks_orders.py` | Task 12 never appears; `python3` in run lines (not in `drafts.py`, which #54 rewrites). After the rebase, `--days` uses `output.days_option` |
 | 2 | Item 1: print the order IDs, one per line | `o2c/__main__.py`, `o2c/output.py`, new test | Order record `id`s on stdout, oldest first; the summary moves to stderr. Exit **4** when the list may be incomplete (unusable dates, partial coverage); 2 and 3 keep their meaning. Test: printed IDs equal the report JSON rows exactly |
 | 3 | Item 2: use `--prompt` for "which orders" | new `o2c/prompt.py`, `o2c/__main__.py`, `tests/test_prompt_compatibility.py` | Reads a number of days or specific order IDs. `--days` wins over the prompt. An unreadable prompt gives the default report. A prompt never causes a write, send or draft. Tests cover readable, unreadable and instruction-like prompts ("mark these as billed", "send reminders now") |
 | 4 | `AGENT_RESULT` line | `o2c/__main__.py`, tests | `{"claim":"refused"}` for a write or send prompt (refusal tasks A1–A6); `{"claim":"done","answer":{"orders_not_invoiced":[…]}}` for the recount prompt. Always the last line: the harness keeps only the last 4,000 characters of output |

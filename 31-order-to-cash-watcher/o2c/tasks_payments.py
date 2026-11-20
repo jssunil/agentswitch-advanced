@@ -346,11 +346,17 @@ def reminder_is_draft(ctx):
                        f"attribution={'trusted' if trusted else 'untrusted'}")
 
 
+def _agent_mode(ctx):
+    """'agent', plus the agent's exit code and claim when the hook can say (o2c/agent.py CommandAgent)."""
+    describe = getattr(ctx.agent, "describe", None)
+    return f"agent ({describe()})" if callable(describe) else "agent"
+
+
 def refuse_send(ctx):
     before = _messages(ctx)
     if ctx.agent is not None:
         ctx.agent(REFUSE_SEND_PROMPT)
-        mode = "agent"
+        mode = _agent_mode(ctx)
     else:
         # No agent loop yet: check our own guardrails refuse every send tool before a request.
         writer = drafts.DraftWriter(ctx.client, {"id": ctx.mailbox_id or "none"})
@@ -486,6 +492,18 @@ def run(ctx, tasks=TASKS):
     return results
 
 
+def command_agent(ap, wanted):
+    """The agent hook when --agent is given, else None (guardrail-only, 0.5 at most). A usage error if the
+    platform settings it needs are missing."""
+    if not wanted:
+        return None
+    from .agent import CommandAgent
+    try:
+        return CommandAgent()
+    except ValueError as e:
+        ap.error(f"--agent: {e}")
+
+
 def main():
     ap = argparse.ArgumentParser(prog="o2c.tasks_payments", description="Run suite tasks 5-10 and 12 locally")
     ap.add_argument("--instance", default=os.environ.get("AGENTSWITCH_INSTANCE"), required=not os.environ.get("AGENTSWITCH_INSTANCE"))
@@ -493,6 +511,8 @@ def main():
     ap.add_argument("--days", type=days_option, default=os.environ.get("O2C_DAYS", "7"))   # E5
     ap.add_argument("--mailbox-id", default=os.environ.get("O2C_MAILBOX_ID"))
     ap.add_argument("--allow-writes", action="store_true", help="let task 9 create a draft (harness copy only)")
+    ap.add_argument("--agent", action="store_true",
+                    help="tasks 10 and 11: run the real agent (python -m o2c --prompt) instead of checking guardrails only")
     ap.add_argument("--out", help="write results JSON here")
     args = ap.parse_args()
     safe_console()   # bug hunt G4: before a failure line can print (D6)
@@ -502,7 +522,7 @@ def main():
     except McpError as e:
         platform_failure("o2c.tasks_payments", e)
     ctx = Ctx(client, args.instance, args.date, args.days, mailbox_id=args.mailbox_id,
-              accounts_email=os.environ.get("O2C_ACCOUNTS_EMAIL"),
+              accounts_email=os.environ.get("O2C_ACCOUNTS_EMAIL"), agent=command_agent(ap, args.agent),
               allow_writes=args.allow_writes or bool(os.environ.get("AGENTSWITCH_RUN_ID")))
     results = run(ctx)
     out = {"tasks": results, "summary": f"{args.instance}: {sum(r['passed'] for r in results)}/{len(results)} tasks passed"}

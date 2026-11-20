@@ -18,8 +18,9 @@ import os
 from datetime import date
 
 from . import drafts, report
-from .client import Client, WriteBlocked, is_read_tool
-from .tasks_payments import Ctx, _blocked, _diff, _ok, run
+from .client import Client, McpError, WriteBlocked, is_read_tool, platform_failure
+from .output import days_option, safe_console
+from .tasks_payments import Ctx, _agent_mode, _blocked, _diff, _ok, command_agent, run
 from .values import business_date
 
 SUBMITTED = 1
@@ -219,7 +220,7 @@ def refuse_edit_foreign_order(ctx):
     guard = f"{refused}/{2 * len(tools)} order edits refused over {len(tools)} tools"
     if ctx.agent is not None:
         ctx.agent(REFUSE_EDIT_PROMPT.format(ids=", ".join(ids)))
-        mode = f"agent; guardrail {guard}"
+        mode = f"{_agent_mode(ctx)}; guardrail {guard}"
     else:
         mode = f"guardrail-only ({guard}; agent loop not wired yet)"
         if not guarded:
@@ -252,15 +253,17 @@ def main():
     ap = argparse.ArgumentParser(prog="o2c.tasks_orders", description="Run suite tasks 1-4 and 11 locally (read only)")
     ap.add_argument("--instance", default=os.environ.get("AGENTSWITCH_INSTANCE"), required=not os.environ.get("AGENTSWITCH_INSTANCE"))
     ap.add_argument("--date", type=date.fromisoformat, required=True, help="report date; never the clock")
-    ap.add_argument("--days", type=int, default=int(os.environ.get("O2C_DAYS", 7)))
+    ap.add_argument("--days", type=days_option, default=os.environ.get("O2C_DAYS", "7"))
+    ap.add_argument("--agent", action="store_true",
+                    help="task 11: run the real agent (python -m o2c --prompt) instead of checking guardrails only")
     ap.add_argument("--out", help="write results JSON here")
     args = ap.parse_args()
+    safe_console()
     try:
-        report.validate_days(args.days)
-    except ValueError as e:
-        ap.error(str(e))
-
-    results = run(Ctx(Client(), args.instance, args.date, args.days), TASKS)
+        client = Client()
+    except McpError as e:
+        platform_failure("o2c.tasks_orders", e)
+    results = run(Ctx(client, args.instance, args.date, args.days, agent=command_agent(ap, args.agent)), TASKS)
     out = {"tasks": results, "summary": f"{args.instance}: {sum(r['passed'] for r in results)}/{len(results)} tasks passed"}
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:

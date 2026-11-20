@@ -700,9 +700,12 @@ class ConsoleEncoding(unittest.TestCase):
         raw = io.BytesIO()
         console = io.TextIOWrapper(raw, encoding="ascii")
         with mock.patch("sys.stdout", console), mock.patch.object(M, "Client", lambda: None), \
-                mock.patch.object(M.report, "build", return_value={}), \
+                mock.patch.object(M.report, "build", return_value={
+                    "report_date": "2026-11-19", "sections": {"orders_not_invoiced": {"status": "ok", "rows": []}}}), \
                 mock.patch.object(M.report, "to_markdown", return_value="客户 शर्मा — Ünï"), \
-                mock.patch("sys.argv", ["o2c", "--date", "2026-11-19"]):
+                mock.patch("sys.stderr", io.StringIO()), \
+                mock.patch("sys.argv", ["o2c", "--date", "2026-11-19", "--markdown"]):
+            # Since phase 2 item 1, stdout carries the order ID list; --markdown prints the report there instead.
             M.main()
             console.flush()
-        self.assertEqual(raw.getvalue().decode("ascii"), "?? ????? ? ?n?\n")
+        self.assertEqual(raw.getvalue().decode("ascii").splitlines()[0], "?? ????? ? ?n?")

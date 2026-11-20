@@ -144,14 +144,18 @@ class MixedReport(unittest.TestCase):
         client, calls = self.client()
         with tempfile.TemporaryDirectory() as tmp, patch.object(cli, "Client", return_value=client), \
                 patch("sys.argv", ["o2c", "--instance", "synthetic", "--date", "2026-11-15", "--out", tmp]), \
-                contextlib.redirect_stdout(io.StringIO()) as stdout:
-            cli.main()
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as stderr:
+            # The fixture has an order with no usable date: the files are written, and exit 4 says the
+            # order ID list may be missing it.
+            with self.assertRaises(SystemExit) as exc:
+                cli.main()
+            self.assertEqual(exc.exception.code, 4)
             data = json.loads((Path(tmp) / "synthetic-2026-11-15.json").read_text(encoding="utf-8"))
             md = (Path(tmp) / "synthetic-2026-11-15.md").read_text(encoding="utf-8")
         for sec in data["sections"].values():
             for row in sec["rows"] + sec.get("no_due_date", []):
                 self.assertIn(row["number"], md)
-        self.assertIn("partial coverage", stdout.getvalue())
+        self.assertIn("partial coverage", stderr.getvalue())
 
     def test_proposal_does_not_crash_on_raw_invalid_invoice_amounts(self):
         client, calls = self.client()

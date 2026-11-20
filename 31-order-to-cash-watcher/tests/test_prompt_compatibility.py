@@ -17,12 +17,14 @@ class PromptCompatibility(unittest.TestCase):
                 argv = ["o2c", "--days", "7", "--date", "2026-11-15", "--instance", "synthetic"]
                 if prompt is not None:
                     argv += ["--prompt", prompt]
+                rep = {"report_date": "2026-11-15",
+                       "sections": {"orders_not_invoiced": {"status": "ok", "rows": [{"id": "so-1"}], "date_issues": []}}}
                 with patch("sys.argv", argv), patch.object(cli, "Client") as client, \
-                        patch.object(cli.report, "build", return_value={}) as build, \
+                        patch.object(cli.report, "build", return_value=rep) as build, \
                         patch.object(cli.report, "to_markdown", return_value="unchanged report"), \
-                        contextlib.redirect_stdout(io.StringIO()) as output:
+                        contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()):
                     cli.main()
                     build.assert_called_once_with(client.return_value, report_date=date(2026, 11, 15),
                                                   days=7, instance="synthetic")
                     client.return_value.assert_not_called()
-                self.assertEqual(output.getvalue(), "unchanged report\n")
+                self.assertEqual(output.getvalue(), "so-1\n")

@@ -198,7 +198,7 @@ class OutputAndCLI(unittest.TestCase):
         client = ReadsOnly([order("SO|1", _party_id_display="客户 | North\nDivision")], invoice_access=False)
         with tempfile.TemporaryDirectory() as tmp, patch.object(cli, "Client", return_value=client), \
                 patch("sys.argv", ["o2c", "--days", "7", "--date", "2026-11-15", "--out", tmp, "--instance", "synthetic"]), \
-                contextlib.redirect_stdout(io.StringIO()) as output:
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as output:
             cli.main()
             rep = json.loads((Path(tmp) / "synthetic-2026-11-15.json").read_text(encoding="utf-8"))
             md = (Path(tmp) / "synthetic-2026-11-15.md").read_text(encoding="utf-8")

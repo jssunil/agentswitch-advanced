@@ -3,16 +3,22 @@
     python3 -m o2c --days 7 --instance suryodaya --out reports/
 
 Reads AGENTSWITCH_BASE_URL and AGENTSWITCH_TOKEN from the environment.
+
+Standard output carries only the record ids of the orders not invoiced, one per line, oldest
+first, so seat 34 can read it without filtering. Everything else (the summary, warnings) goes to
+standard error. `--markdown` prints the full report on standard output instead, for a person.
+Exit 4 means the report was produced but the ID list may be missing orders; stderr says why.
 """
 import argparse
 import json
 import os
+import sys
 from datetime import date
 from pathlib import Path
 
 from . import report
 from .client import Client, McpError, platform_failure
-from .output import days_option, instance_label, report_stem, safe_console, write_pair
+from .output import EXIT_INCOMPLETE, days_option, instance_label, order_ids, order_list_gaps, report_stem, safe_console, write_pair
 
 nonnegative_days = days_option   # older name, kept for callers
 
@@ -35,7 +41,9 @@ def main():
     ap.add_argument("--days", type=days_option, default=os.environ.get("O2C_DAYS", "7"), help="N: nonnegative days before an order counts as not invoiced")
     ap.add_argument("--date", type=date.fromisoformat, help="report date (default: today in IST)")
     ap.add_argument("--instance", default=os.environ.get("AGENTSWITCH_INSTANCE"), help="label for the report, e.g. suryodaya")
-    ap.add_argument("--out", type=Path, help="folder to write <instance>-<date>.md and .json; prints Markdown if omitted")
+    ap.add_argument("--out", type=Path, help="folder to write <instance>-<date>.md and .json")
+    ap.add_argument("--markdown", action="store_true",
+                    help="print the full Markdown report on stdout instead of the order ID list")
     # Seat 34 appends this argument to every seat command. The deterministic
     # report accepts it for compatibility; it must not interpret instructions.
     ap.add_argument("--prompt", help="Seat 34 compatibility: accepted and ignored; no model is called")
@@ -60,9 +68,20 @@ def main():
         validation = sum(len(sec.get("data_issues", [])) for sec in rep["sections"].values())
         if validation:
             counts += f", validation_issues={validation} (partial coverage)"
-        print(f"wrote {args.out / stem}.md ({counts})")
-    else:
+        print(f"wrote {args.out / stem}.md ({counts})", file=sys.stderr)
+    ids = order_ids(rep)
+    gaps = order_list_gaps(rep)
+    if args.markdown:
         print(md)
+    else:
+        if not args.out:
+            print(f"o2c: {len(ids)} orders not invoiced after {args.days} days on {rep['report_date']}; "
+                  "order record ids on stdout, oldest first (--out or --markdown for the full report)", file=sys.stderr)
+        sys.stdout.write("".join(i + "\n" for i in ids))
+    if gaps:
+        sys.stdout.flush()   # the ids come before the warning when the harness merges the two streams
+        print(f"o2c: the order list may be incomplete: {'; '.join(gaps)}", file=sys.stderr)
+        raise SystemExit(EXIT_INCOMPLETE)
 
 
 if __name__ == "__main__":

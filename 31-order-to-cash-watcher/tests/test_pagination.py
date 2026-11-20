@@ -150,7 +150,8 @@ class ReportCompleteness(unittest.TestCase):
         argv = ["o2c", "--date", "2026-11-15", "--instance", "synthetic", "--out", str(target)]
         with patch.object(client, "tool_names", return_value={"SalesOrder.list", "Payment.list"}), \
                 patch.object(client, "call", side_effect=pages), patch.object(cli, "Client", return_value=client), \
-                patch("sys.argv", argv), contextlib.redirect_stdout(io.StringIO()) as output:
+                patch("sys.argv", argv), contextlib.redirect_stdout(io.StringIO()) as output, \
+                contextlib.redirect_stderr(output):   # the summary line is on stderr
             cli.main()
         return output.getvalue()
 

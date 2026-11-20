@@ -35,6 +35,41 @@ def safe_console():
                 pass
 
 
+# Exit codes: 0 the report was produced; 2 bad options (argparse); 3 the platform could not be
+# read (#54); 4 the report was produced but the order ID list may be missing orders.
+EXIT_INCOMPLETE = 4
+
+
+def order_ids(rep):
+    """Record ids of the orders not invoiced, in report order (oldest first).
+
+    Phase 2 item 1 (18 Nov): seat 34's 30 Nov recount compares this list with the platform. The
+    record `id`, not the order `number`, because the harness snapshots orders by id (until seat 34
+    says otherwise).
+    """
+    return [str(r["id"]) for r in rep["sections"]["orders_not_invoiced"]["rows"] if r.get("id") is not None]
+
+
+def order_list_gaps(rep):
+    """Why the order ID list may be missing orders; [] when it is complete.
+
+    An order with a missing, invalid or future order date can't be aged, so it is left out of the
+    list (the report shows it under "Orders with unusable dates"). A row with no record id can't
+    be printed. Either way the list must not look complete.
+    """
+    sec = rep["sections"]["orders_not_invoiced"]
+    if sec.get("status") != "ok":
+        return [f"orders not invoiced is {sec.get('status')}"]
+    gaps = []
+    undated = len(sec.get("date_issues") or [])
+    if undated:
+        gaps.append(f"{undated} order(s) with an unusable order date left out")
+    no_id = sum(1 for r in sec["rows"] if r.get("id") is None)
+    if no_id:
+        gaps.append(f"{no_id} order(s) without a record id left out")
+    return gaps
+
+
 def instance_label(value):
     """An omitted instance uses 'report'; explicitly blank/unsafe values fail."""
     if value is None:

@@ -40,18 +40,28 @@ def safe_console():
 EXIT_INCOMPLETE = 4
 
 
-def order_ids(rep):
-    """Record ids of the orders not invoiced, in report order (oldest first).
+def _named(rows, orders):
+    """The rows a prompt named (phase 2 item 2), or all rows when it named none."""
+    if not orders:
+        return list(rows)
+    from .prompt import matches
+    return [r for r in rows if matches(r, orders)]
+
+
+def order_ids(rep, orders=()):
+    """Record ids of the orders not invoiced, in report order (oldest first); with `orders`, only
+    the ones the prompt named.
 
     Phase 2 item 1 (18 Nov): seat 34's 30 Nov recount compares this list with the platform. The
     record `id`, not the order `number`, because the harness snapshots orders by id (until seat 34
     says otherwise).
     """
-    return [str(r["id"]) for r in rep["sections"]["orders_not_invoiced"]["rows"] if r.get("id") is not None]
+    return [str(r["id"]) for r in _named(rep["sections"]["orders_not_invoiced"]["rows"], orders) if r.get("id") is not None]
 
 
-def order_list_gaps(rep):
-    """Why the order ID list may be missing orders; [] when it is complete.
+def order_list_gaps(rep, orders=()):
+    """Why the order ID list may be missing orders; [] when it is complete. With `orders` (named in
+    the prompt), only those orders count.
 
     An order with a missing, invalid or future order date can't be aged, so it is left out of the
     list (the report shows it under "Orders with unusable dates"). A row with no record id can't
@@ -61,10 +71,10 @@ def order_list_gaps(rep):
     if sec.get("status") != "ok":
         return [f"orders not invoiced is {sec.get('status')}"]
     gaps = []
-    undated = len(sec.get("date_issues") or [])
+    undated = len(_named(sec.get("date_issues") or [], orders))
     if undated:
         gaps.append(f"{undated} order(s) with an unusable order date left out")
-    no_id = sum(1 for r in sec["rows"] if r.get("id") is None)
+    no_id = sum(1 for r in _named(sec["rows"], orders) if r.get("id") is None)
     if no_id:
         gaps.append(f"{no_id} order(s) without a record id left out")
     return gaps

@@ -16,7 +16,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-from . import report
+from . import prompt as prompt_mod, report
 from .client import Client, McpError, platform_failure
 from .output import EXIT_INCOMPLETE, days_option, instance_label, order_ids, order_list_gaps, report_stem, safe_console, write_pair
 
@@ -38,21 +38,38 @@ def write_report(rep, md, out, instance):
 
 def main():
     ap = argparse.ArgumentParser(prog="o2c", description="Daily order-to-cash exception report (read-only)")
-    ap.add_argument("--days", type=days_option, default=os.environ.get("O2C_DAYS", "7"), help="N: nonnegative days before an order counts as not invoiced")
+    ap.add_argument("--days", type=days_option,
+                    help="N: nonnegative days before an order counts as not invoiced (default: the prompt, then O2C_DAYS, then 7)")
     ap.add_argument("--date", type=date.fromisoformat, help="report date (default: today in IST)")
     ap.add_argument("--instance", default=os.environ.get("AGENTSWITCH_INSTANCE"), help="label for the report, e.g. suryodaya")
     ap.add_argument("--out", type=Path, help="folder to write <instance>-<date>.md and .json")
     ap.add_argument("--markdown", action="store_true",
                     help="print the full Markdown report on stdout instead of the order ID list")
-    # Seat 34 appends this argument to every seat command. The deterministic
-    # report accepts it for compatibility; it must not interpret instructions.
-    ap.add_argument("--prompt", help="Seat 34 compatibility: accepted and ignored; no model is called")
+    # Seat 34 appends this argument to every seat command. Only a number of days and specific order
+    # ids or numbers are read from it (o2c/prompt.py); instructions in it are never followed.
+    ap.add_argument("--prompt", help="the \"which orders\" question: a number of days and/or order ids; no model is called")
     args = ap.parse_args()
     safe_console()
     try:
         instance_label(args.instance)
     except ValueError as e:
         ap.error(str(e))
+    asked = prompt_mod.read(args.prompt)
+    notes = list(asked.notes)
+    if args.days is not None:
+        days = args.days
+        if asked.days is not None and asked.days != args.days:
+            notes = [n for n in notes if not n.startswith("orders more than")] + [f"--days {args.days} wins over the prompt"]
+    elif asked.days is not None:
+        days = asked.days
+    else:
+        try:
+            days = days_option(os.environ.get("O2C_DAYS", "7"))
+        except argparse.ArgumentTypeError as e:
+            ap.error(f"O2C_DAYS: {e}")
+    args.days = days
+    if args.prompt is not None and notes:
+        print(f"o2c: prompt: {'; '.join(notes)}", file=sys.stderr)
 
     try:
         rep = report.build(Client(), report_date=args.date, days=args.days, instance=args.instance)
@@ -69,12 +86,15 @@ def main():
         if validation:
             counts += f", validation_issues={validation} (partial coverage)"
         print(f"wrote {args.out / stem}.md ({counts})", file=sys.stderr)
-    ids = order_ids(rep)
-    gaps = order_list_gaps(rep)
+    ids = order_ids(rep, asked.orders)
+    gaps = order_list_gaps(rep, asked.orders)
     if args.markdown:
         print(md)
     else:
-        if not args.out:
+        if asked.orders:
+            print(f"o2c: {len(ids)} of the {len(asked.orders)} order(s) named are not invoiced after {args.days} days "
+                  "(the others are invoiced, too recent or not found)", file=sys.stderr)
+        elif not args.out:
             print(f"o2c: {len(ids)} orders not invoiced after {args.days} days on {rep['report_date']}; "
                   "order record ids on stdout, oldest first (--out or --markdown for the full report)", file=sys.stderr)
         sys.stdout.write("".join(i + "\n" for i in ids))

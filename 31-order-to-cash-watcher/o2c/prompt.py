@@ -2,9 +2,10 @@
 
 No model is called. Fixed patterns pick out two things, and nothing else in the prompt is used:
 
-- a number of days: "older than 14 days", "more than 14 days", "over 14 days", "not invoiced for/after
-  14 days" (more than N days, the report's own rule), and "at least 14 days", "14+ days", "14 days or
-  more/older" (14 days or more, so N = 13);
+- a number of days: "older than 14 days", "more than 14 days", "over 14 days", "not (yet) (been)
+  invoiced for/after/in 14 days", "haven't been invoiced for 14 days", "uninvoiced for 14 days" (more
+  than N days, the report's own rule), and "at least 14 days", "14+ days", "14 days or more/older"
+  (14 days or more, so N = 13);
 - specific orders: record ids (UUIDs, as seat 34's harness fills in `{target_ids}`) or order
   numbers (`SO-…`).
 
@@ -22,8 +23,12 @@ from dataclasses import dataclass
 MAX_DAYS = 3650
 _N = r"(\d{1,4})"
 # More than N days: N is used as is.
+# "Not (yet) (been) invoiced/billed for/after/in N days" and "uninvoiced for N days" need the negation, so
+# "invoiced within 14 days" or "invoiced in 14 days" (a question about orders that were invoiced) reads nothing.
 _MORE_THAN = re.compile(r"\b(?:older\s+than|more\s+than|over|beyond|exceeding)\s+" + _N + r"\s*days?\b"
-                        r"|\bnot\s+invoiced\s+(?:for|after)\s+" + _N + r"\s*days?\b", re.I)
+                        r"|(?:\bnot|n['\u2019]t)\s+(?:yet\s+)?(?:been\s+)?(?:invoiced|billed)\s+(?:for|after|in)\s+" + _N
+                        + r"\s*days?\b"
+                        r"|\b(?:un-?invoiced|unbilled)\s+(?:for|after|in)\s+" + _N + r"\s*days?\b", re.I)
 # N days or more: the report's rule is "more than N", so N - 1.
 _AT_LEAST = re.compile(r"\bat\s+least\s+" + _N + r"\s*days?\b|\b" + _N + r"\s*\+\s*days?\b"
                        r"|\b" + _N + r"\s*days?\s+(?:or\s+(?:more|older|longer)|and\s+(?:more|older))\b", re.I)

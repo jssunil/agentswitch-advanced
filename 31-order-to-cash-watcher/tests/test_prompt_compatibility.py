@@ -220,7 +220,24 @@ class PromptBoundaries(unittest.TestCase):
         self.assertEqual(prompt.read("more than 14 days and at least 15 days").days, 14)
 
     def test_invoiced_within_n_days_is_not_read_as_not_invoiced(self):
-        self.assertIsNone(prompt.read("Which orders were invoiced within 14 days?").days)
+        for text in ("Which orders were invoiced within 14 days?", "Which orders were invoiced in 14 days?",
+                     "Orders not invoiced within 14 days"):
+            with self.subTest(text=text):
+                self.assertIsNone(prompt.read(text).days)
+
+    def test_common_not_invoiced_phrasings_keep_their_day_count(self):
+        # Deepak's 21 Nov review: these read 14 at 1762442 and nothing after the "within" fix.
+        for text in ("Which orders have not been invoiced for 14 days?",
+                     "orders that haven't been invoiced for 14 days",
+                     "orders that haven\u2019t been invoiced for 14 days",   # curly apostrophe
+                     "orders not yet invoiced after 14 days",
+                     "orders still not invoiced in 14 days",
+                     "orders uninvoiced for 14 days",
+                     "orders un-invoiced for 14 days",
+                     "orders not billed for 14 days",
+                     "Orders NOT INVOICED FOR 14 DAYS"):
+            with self.subTest(text=text):
+                self.assertEqual(prompt.read(text).days, 14)
 
     def test_ids_and_numbers_at_their_edges(self):
         self.assertEqual(prompt.read("check SO-2026-00012.").orders, ("SO-2026-00012",))

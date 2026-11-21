@@ -19,15 +19,26 @@ D = date(2026, 11, 20)
 
 class SuiteDiscoveryAndFormat(unittest.TestCase):
     def test_all_tasks_combines_both_modules_dynamically_with_unique_ids(self):
-        tasks = suite.all_tasks()
+        ids = [t[0] for t in suite.all_tasks()]
         expected = [t[0] for t in tasks_orders.TASKS] + [t[0] for t in tasks_payments.TASKS]
-        self.assertEqual([t[0] for t in tasks], expected)
-        self.assertEqual(len(set(expected)), len(expected))
+        self.assertEqual(sorted(ids), sorted(expected))
+        self.assertEqual(len(set(ids)), len(ids))
+
+    def test_tasks_run_in_suite_number_order(self):
+        # Deepak's 21 Nov review: results came out 1-4, 11, 5-10, 12.
+        self.assertEqual([t[0] for t in suite.all_tasks()], list(suite.NUMBERED))
+
+    def test_every_numbered_task_exists(self):
+        found = {t[0] for t in tasks_orders.TASKS} | {t[0] for t in tasks_payments.TASKS}
+        self.assertEqual(set(suite.NUMBERED) - found, set())
 
     def test_extra_task_in_either_module_is_included_without_fixed_count(self):
         extra = ("extra_check", "Extra check", lambda c: {"passed": True, "score": 1.0, "evidence": "ok"})
-        with mock.patch.object(tasks_orders, "TASKS", tasks_orders.TASKS + [extra]):
-            self.assertIn("extra_check", [t[0] for t in suite.all_tasks()])
+        for module in (tasks_orders, tasks_payments):
+            with self.subTest(module=module.__name__), mock.patch.object(module, "TASKS", [extra] + module.TASKS):
+                ids = [t[0] for t in suite.all_tasks()]
+                self.assertEqual(ids[-1], "extra_check")   # unnumbered: after the 12, never dropped
+                self.assertEqual(ids[:-1], list(suite.NUMBERED))
 
     def test_run_suite_writes_task_format_schema_and_handles_crashes(self):
         fake = PayFakePlatform({"SalesOrder": [], "Invoice": [], "Payment": [], "EmailMessage": []})

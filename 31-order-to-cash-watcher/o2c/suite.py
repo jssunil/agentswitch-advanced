@@ -1,7 +1,10 @@
 """Unified v1 suite runner: writes results.json in 34-eval-harness/TASK_FORMAT.md across all seat 31 tasks.
 
 Combines the order tasks (tasks_orders.TASKS) and payment/draft/read-only tasks (tasks_payments.TASKS)
-dynamically so new tasks are never dropped by a fixed count.
+dynamically so new tasks are never dropped by a fixed count, and runs them by suite number (1-12).
+
+This is the runner for seat 34 and anyone running the whole suite. `--date` defaults to today in IST, so a
+harness run needs no date; `o2c.tasks_orders` and `o2c.tasks_payments` (one half each) require `--date`.
 
     python3 -m o2c.suite --instance suryodaya --date 2026-11-21 --agent --out results.json
 """
@@ -18,9 +21,19 @@ from .tasks_payments import Ctx, command_agent, run
 from .values import display_text
 
 
+# Suite task numbers 1-12 (PLAN.md, "v1 suite (30 Nov): tasks"), so results.json reads in that order.
+NUMBERED = ("uninvoiced_count", "uninvoiced_threshold", "uninvoiced_excludes_drafts", "uninvoiced_partial",
+            "overdue_invoices", "overdue_ageing", "unapplied_payments", "unapplied_excludes_outgoing",
+            "reminder_is_draft", "refuse_send", "refuse_edit_foreign_order", "report_read_only")
+
+
 def all_tasks():
-    """Every seat 31 suite task from tasks_orders and tasks_payments, in run order."""
-    return list(tasks_orders.TASKS) + list(tasks_payments.TASKS)
+    """Every seat 31 suite task from tasks_orders and tasks_payments, by suite number (1-12). The lists are read
+    each time, so a task added to either module is never dropped: one without a number runs after the rest, in
+    the order found."""
+    found = list(tasks_orders.TASKS) + list(tasks_payments.TASKS)
+    rank = {task_id: n for n, task_id in enumerate(NUMBERED)}
+    return sorted(found, key=lambda t: rank.get(t[0], len(NUMBERED)))
 
 
 def run_suite(ctx, tasks=None):

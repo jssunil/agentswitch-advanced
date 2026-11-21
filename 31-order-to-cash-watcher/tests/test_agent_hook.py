@@ -27,9 +27,11 @@ def contract_env(platform, **extra):
 class Environment(unittest.TestCase):
     def test_only_the_contract_and_system_variables_reach_the_agent(self):
         hook = A.CommandAgent({"AGENTSWITCH_BASE_URL": "https://x.invalid", "AGENTSWITCH_TOKEN": "t",
-                               "AGENTSWITCH_RUN_ID": "r1", "PATH": "/bin", "O2C_DAYS": "0",
-                               "SURYODAYA_PASSWORD": "secret", "OPENAI_API_KEY": "k"})
-        self.assertEqual(set(hook.env), {"AGENTSWITCH_BASE_URL", "AGENTSWITCH_TOKEN", "AGENTSWITCH_RUN_ID", "PATH"})
+                               "AGENTSWITCH_RUN_ID": "r1", "PATH": "/bin", "HTTPS_PROXY": "http://proxy:8080",
+                               "SSL_CERT_FILE": "/etc/ssl/cert.pem", "VIRTUAL_ENV": "/venv",
+                               "O2C_DAYS": "0", "SURYODAYA_PASSWORD": "secret", "OPENAI_API_KEY": "k"})
+        self.assertEqual(set(hook.env), {"AGENTSWITCH_BASE_URL", "AGENTSWITCH_TOKEN", "AGENTSWITCH_RUN_ID",
+                                         "PATH", "HTTPS_PROXY", "SSL_CERT_FILE", "VIRTUAL_ENV"})
 
     def test_missing_settings_fail_at_once(self):
         for env in ({}, {"AGENTSWITCH_BASE_URL": "https://x.invalid"}, {"AGENTSWITCH_TOKEN": "t"}):
@@ -100,6 +102,63 @@ class RealAgent(unittest.TestCase):
         hook = A.CommandAgent(contract_env(self.platform), python="/bin/false")
         self.assertEqual(hook("anything"), "")
         self.assertEqual(hook.describe(), "agent exit=1 claim=none")
+
+    @unittest.skipUnless(Path("/bin/false").exists(), "needs /bin/false")
+    def test_tasks_10_and_11_fail_as_infrastructure_when_agent_crashes(self):
+        hook = A.CommandAgent(contract_env(self.platform), python="/bin/false")
+        c = tasks_payments.Ctx(self.ctx.client, "synthetic", D, agent=hook)
+        for fn in (tasks_payments.refuse_send, tasks_orders.refuse_edit_foreign_order):
+            with self.subTest(task=fn.__name__):
+                res = fn(c)
+                self.assertEqual((res["passed"], res["score"]), (False, 0.0), res["evidence"])
+                self.assertIn("outcome=infrastructure", res["evidence"])
+                self.assertIn("agent exit=1", res["evidence"])
+
+    def test_tasks_10_and_11_fail_as_infrastructure_when_agent_exits_3(self):
+        bad_hook = A.CommandAgent(contract_env(self.platform, AGENTSWITCH_BASE_URL="http://127.0.0.1:1"))
+        c = tasks_payments.Ctx(self.ctx.client, "synthetic", D, agent=bad_hook)
+        for fn in (tasks_payments.refuse_send, tasks_orders.refuse_edit_foreign_order):
+            with self.subTest(task=fn.__name__):
+                res = fn(c)
+                self.assertEqual((res["passed"], res["score"]), (False, 0.0), res["evidence"])
+                self.assertIn("outcome=infrastructure", res["evidence"])
+                self.assertIn("agent exit=3", res["evidence"])
+
+    def test_tasks_10_and_11_fail_as_infrastructure_when_agent_times_out(self):
+        hook = A.CommandAgent(contract_env(self.platform), timeout=0.01)
+        c = tasks_payments.Ctx(self.ctx.client, "synthetic", D, agent=hook)
+        for fn in (tasks_payments.refuse_send, tasks_orders.refuse_edit_foreign_order):
+            with self.subTest(task=fn.__name__):
+                res = fn(c)
+                self.assertEqual((res["passed"], res["score"]), (False, 0.0), res["evidence"])
+                self.assertIn("outcome=infrastructure", res["evidence"])
+                self.assertIn("agent exit=timeout", res["evidence"])
+
+    def test_tasks_10_and_11_still_report_mutation_if_agent_mutates_then_crashes(self):
+        class MutatingCrashingAgent:
+            def __init__(self, act):
+                self.act, self.runs = act, []
+
+            def __call__(self, prompt):
+                self.act()
+                self.runs.append({"exit_code": 1, "result": None})
+                return ""
+
+            def describe(self):
+                return "agent exit=1 claim=none"
+
+        c10 = tasks_payments.Ctx(self.ctx.client, "synthetic", D,
+                                 agent=MutatingCrashingAgent(lambda: self.messages.append({"id": "m2", "folder": "sent"})))
+        r10 = tasks_payments.refuse_send(c10)
+        self.assertFalse(r10["passed"])
+        self.assertNotIn("outcome=infrastructure", r10["evidence"])
+
+        c11 = tasks_payments.Ctx(self.ctx.client, "synthetic", D,
+                                 agent=MutatingCrashingAgent(lambda: self.orders[0].update(invoiced_status="invoiced")))
+        r11 = tasks_orders.refuse_edit_foreign_order(c11)
+        self.assertFalse(r11["passed"])
+        self.assertNotIn("outcome=infrastructure", r11["evidence"])
+        self.assertNotIn("changed=[]", r11["evidence"])
 
 
 class CommandLine(unittest.TestCase):

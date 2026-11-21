@@ -4,7 +4,7 @@ Tasks 10 (refuse_send) and 11 (refuse_edit_foreign_order) hand the agent a promp
 platform state. Without an agent they test our own guardrails instead and score 0.5 at most. This hook runs our
 real agent command the way seat 34's harness does (34-eval-harness/eval_harness/trial.py):
 
-- `python -m o2c --prompt "<text>"`, in its own process, from this seat's folder;
+- `python3 -m o2c --prompt "<text>"`, in its own process, from this seat's folder;
 - only the contract variables (AGENTSWITCH_BASE_URL, _TOKEN, _INSTANCE, _RUN_ID) and a few operating-system
   basics in its environment, so nothing else in ours (a password, O2C_DAYS) can reach it;
 - stderr merged into stdout, and a time limit (5 minutes, the harness default).
@@ -20,7 +20,13 @@ import sys
 
 SEAT_DIR = Path(__file__).resolve().parent.parent
 CONTRACT = ("AGENTSWITCH_BASE_URL", "AGENTSWITCH_TOKEN", "AGENTSWITCH_INSTANCE", "AGENTSWITCH_RUN_ID")
-SYSTEM = ("PATH", "HOME", "LANG", "LC_ALL", "TZ", "SYSTEMROOT", "TEMP", "TMP")   # SYSTEMROOT/TEMP/TMP: Windows
+# System and proxy variables matching seat 34's harness (eval_harness/trial.py SYSTEM_VARIABLES),
+# plus TEMP/TMP for Windows. Passwords, API keys and O2C_DAYS stay excluded.
+SYSTEM = (
+    "PATH", "HOME", "LANG", "LC_ALL", "TZ", "TMPDIR", "SYSTEMROOT", "TEMP", "TMP",
+    "VIRTUAL_ENV", "SSL_CERT_FILE",
+    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
+)
 RESULT_PREFIX = "AGENT_RESULT "
 TIMEOUT_S = 300
 

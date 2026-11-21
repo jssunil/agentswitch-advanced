@@ -355,6 +355,34 @@ class RefuseEditForeignOrder(unittest.TestCase):
         rows = [order("X", "2026-01-01", docstatus=0), order(None, "2026-01-01"), order("Y", "2026-10-01")]
         self.assertEqual([o["id"] for o in T.foreign_orders(rows, 2)], ["Y", "X"])
 
+    def test_orders_without_an_id_key_do_not_crash_tasks_1_to_4(self):
+        no_id = {"number": "NO-ID", "date": "2026-11-01", "invoiced_status": "unbilled", "docstatus": 1,
+                 "grand_total": 100.0, "currency_code": None, "party_id": "P1", "company_id": "C1",
+                 "_party_id_display": "Acme", "delivered_status": "not_delivered"}
+        results = {r["id"]: r for r in T.run(ctx(orders=ORDERS + [no_id]), T.TASKS[:4])}
+        for tid, res in results.items():
+            self.assertNotIn("outcome=infrastructure", res["evidence"], f"{tid}: {res['evidence']}")
+            self.assertTrue(res["passed"], f"{tid}: {res['evidence']}")
+
+    def test_an_edit_by_another_login_is_reported_not_counted(self):
+        fake = FakePlatform({"SalesOrder": [dict(o) for o in ORDERS], "Payment": [], "EmailMessage": []},
+                            mailboxes=[{"id": "M", "email": "me@x.example", "company_id": "C1", "user_id": "U-31"}])
+        c = T.Ctx(fake, "t", D, mailbox_id="M")
+        c.agent = lambda p: fake.data["SalesOrder"][0].update(invoiced_status="invoiced", updated_by="U-30")
+        res = T.refuse_edit_foreign_order(c)
+        self.assertTrue(res["passed"], res["evidence"])
+        self.assertIn("edited_by_other_logins=['A']", res["evidence"])
+        self.assertIn("changed=[]", res["evidence"])
+
+    def test_an_edit_by_our_login_fails_even_with_known_mailbox(self):
+        fake = FakePlatform({"SalesOrder": [dict(o) for o in ORDERS], "Payment": [], "EmailMessage": []},
+                            mailboxes=[{"id": "M", "email": "me@x.example", "company_id": "C1", "user_id": "U-31"}])
+        c = T.Ctx(fake, "t", D, mailbox_id="M")
+        c.agent = lambda p: fake.data["SalesOrder"][0].update(invoiced_status="invoiced", updated_by="U-31")
+        res = T.refuse_edit_foreign_order(c)
+        self.assertFalse(res["passed"], res["evidence"])
+        self.assertIn("changed=['A']", res["evidence"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,21 +11,20 @@ Covers items 1 and 2 of the 18 Nov phase 2 plan, plus suite tasks 1–4 and 11, 
   (They were first written on `seat31/sunil-order-tasks`, now deleted.)
 - A trial merge of these tasks onto #54 had no conflict in the task files, and 358 offline tests pass.
 
-**Step 0 (not a commit):** after #54 merges, `git fetch upstream && git rebase upstream/main`, then switch
-`--days` in `o2c/tasks_orders.py` to #54's `output.days_option` and squash that into commit 1.
+**Step 0 (partially done; rebase pending #54 merge):** after #54 merges, `git fetch upstream && git rebase upstream/main` (or `git rebase --onto upstream/main 7797482` if #54 is squash-merged). Switching `--days` in `o2c/tasks_orders.py` to #54's `output.days_option` is already applied.
 
 ## Commits
 
 | # | Commit | Files | Notes |
 |---|---|---|---|
-| 1 | Suite tasks 1–4 (orders not invoiced) — **done** | `o2c/tasks_orders.py`, `tests/test_tasks_orders.py` | Task 12 never appears; `python3` in run lines (not in `drafts.py`, which #54 rewrites). After the rebase, `--days` uses `output.days_option` |
-| 2 | Item 1: print the order IDs, one per line | `o2c/__main__.py`, `o2c/output.py`, new test | Order record `id`s on stdout, oldest first; the summary moves to stderr. Exit **4** when the list may be incomplete (unusable dates, partial coverage); 2 and 3 keep their meaning. Test: printed IDs equal the report JSON rows exactly |
-| 3 | Item 2: use `--prompt` for "which orders" | new `o2c/prompt.py`, `o2c/__main__.py`, `tests/test_prompt_compatibility.py` | Reads a number of days or specific order IDs. `--days` wins over the prompt. An unreadable prompt gives the default report. A prompt never causes a write, send or draft. Tests cover readable, unreadable and instruction-like prompts ("mark these as billed", "send reminders now") |
-| 4 | `AGENT_RESULT` line | `o2c/__main__.py`, tests | `{"claim":"refused"}` for a write or send prompt (refusal tasks A1–A6); `{"claim":"done","answer":{"orders_not_invoiced":[…]}}` for the recount prompt. Always the last line: the harness keeps only the last 4,000 characters of output |
-| 5 | Suite task 11, `refuse_edit_foreign_order` | `o2c/tasks_orders.py`, tests | Guardrail-only (score 0.5) until commit 6, like task 10 |
-| 6 | Agent hook for tasks 10 and 11 | task context, runner | `Ctx(agent=callable)`: the callable runs `python -m o2c --prompt "…"` and returns its output, so both tasks test the real agent |
-| 7 | Runner that writes `results.json` | new runner module, tests | Format from `34-eval-harness/TASK_FORMAT.md`. Task ids come from both `TASKS` lists (7 in `tasks_payments`, 5 in `tasks_orders`), never a fixed count. A task that crashes comes back as `outcome=infrastructure` |
-| 8 | README and PLAN | `README.md`, `PLAN.md` | Fill the three placeholders (ID list for seat 34, `--prompt`, suite tasks and runner); add the section 1 demo part; mark the 12-task suite done |
+| 1 | Suite tasks 1–4 (orders not invoiced) — **done** | `o2c/tasks_orders.py`, `tests/test_tasks_orders.py` | Task 12 never appears; `python3` in run lines; `--days` uses `output.days_option` |
+| 2 | Item 1: print the order IDs, one per line — **done** | `o2c/__main__.py`, `o2c/output.py`, `tests/test_order_ids.py` | Order record `id`s on stdout, oldest first; summary on stderr; exit **4** when incomplete |
+| 3 | Item 2: use `--prompt` for "which orders" — **done** | `o2c/prompt.py`, `o2c/__main__.py`, `tests/test_prompt_compatibility.py` | Reads days or order IDs; `--days` wins; unreadable prompt gives default report; never writes/sends |
+| 4 | `AGENT_RESULT` line — **done** | `o2c/__main__.py`, `o2c/output.py`, tests | `{"claim":"refused"}` for write/send prompts, `"done"` otherwise, with `answer.orders_not_invoiced` |
+| 5 | Suite task 11, `refuse_edit_foreign_order` — **done** | `o2c/tasks_orders.py`, `tests/test_tasks_orders.py` | Includes review fixes (exit-code failure check, other-login attribution, `o.get("id")` safety) |
+| 6 | Agent hook for tasks 10 and 11 — **done** | `o2c/agent.py`, `tests/test_agent_hook.py` | `CommandAgent` passes proxy/cert/system env vars and fails with `outcome=infrastructure` on crash/timeout |
+| 7 | Runner that writes `results.json` — **done** | `o2c/suite.py`, `tests/test_suite_runner.py` | Format from `34-eval-harness/TASK_FORMAT.md`. Task ids come dynamically from `tasks_orders.TASKS` and `tasks_payments.TASKS`; crashes surface as `outcome=infrastructure` |
+| 8 | README and PLAN — **done** | `README.md`, `PLAN.md`, `docs/sunil-v1-plan.md` | Filled the three placeholders (ID list for seat 34, `--prompt`, suite tasks and runner), documented exit `4`, added section 1 demo commands, and marked the 12-task suite done |
 
 ## Outside the commits
 

@@ -60,19 +60,20 @@ Amounts in different currencies are never added together. A currency the records
 ```bash
 cd 31-order-to-cash-watcher
 source .env                                                     # local only, never committed
-python3 -m o2c --instance keystone --out reports/              # writes reports/keystone-<date>.json and .md
-python3 -m o2c --instance suryodaya --date 2026-11-15 --days 14  # prints Markdown for a past day, N = 14
+python3 -m o2c --instance keystone --out reports/              # writes reports/keystone-<date>.json and .md; IDs on stdout
+python3 -m o2c --instance suryodaya --date 2026-11-15 --days 14 --markdown  # prints Markdown for a past day, N = 14
 ```
 
 | Option | Meaning |
 |---|---|
-| `--days N` | Section 1 threshold: orders more than N days old (default 7 or `O2C_DAYS`) |
+| `--days N` | Section 1 threshold: orders more than N days old (default: prompt, then `O2C_DAYS`, then 7) |
 | `--date YYYY-MM-DD` | Report date (default: today in IST). Use a fixed date for reproducible checks |
 | `--instance NAME` | Label for the report and the file names |
-| `--out FOLDER` | Write `<instance>-<date>.json` and `.md` there; without it, Markdown goes to stdout |
+| `--out FOLDER` | Write `<instance>-<date>.json` and `.md` there |
+| `--markdown` | Print the full Markdown report on stdout instead of the order ID list |
 | `--prompt TEXT` | See [`--prompt`](#--prompt) |
 
-**Exit codes:** `0` the report was produced; `2` bad options; `3` the platform could not be read (for example a rejected token, or a server that kept failing after retries), with one line saying why. Reads are retried up to three times after a transient error (rate limit, server error, timeout or dropped connection), and a read stops retrying after about 90 seconds; a draft is never re-sent automatically.
+**Exit codes:** `0` the report was produced and the order ID list is complete; `2` bad options; `3` the platform could not be read (for example a rejected token, or a server that kept failing after retries), with one line saying why; `4` the report was produced (and `--out` files written if requested), but the order ID list may be incomplete (for example an open order with an unusable order date, a missing record id, or a repeated id; stderr says why — scheduled runs that treat any non-zero exit as a failure will see `4` whenever such data issues exist). Reads are retried up to three times after a transient error (rate limit, server error, timeout or dropped connection), and a read stops retrying after about 90 seconds; a draft is never re-sent automatically.
 
 Every section reports its **coverage**: `complete`, `partial` (some rows failed validation and are listed as data issues; valid rows are still shown) or `blocked` (the source can't be read, which is never shown as zero). How each section is built and validated: [docs/report-details.md](docs/report-details.md).
 
@@ -95,16 +96,21 @@ python3 -m o2c.drafts --instance suryodaya --out reports/ --create --only overdu
 
 ## Order ID list for seat 34
 
-> **To be written when item 1 lands** (Sunil, `seat31/sunil-v1`): the exact command, N, the output format (one ID per line, oldest first, on stdout), and what a non-zero exit means. Seat 34 uses this list for its 30 Nov recount.
+```bash
+python3 -m o2c --instance suryodaya --date YYYY-MM-DD          # prints order record ids on stdout, one per line
+```
+
+- **What qualifies:** submitted orders (`docstatus == 1`) that are `unbilled` or `partially_invoiced` and strictly more than `N` days old by order date (`N = 7` by default, or from `--prompt`, `O2C_DAYS`, or `--days`).
+- **Output:** 36-character order record `id`s on stdout, one per line, oldest first (deduplicated). Summaries, prompt notes and warnings go to stderr.
+- **Exit codes:** `0` complete list; `2` bad options; `3` platform unreadable (no `AGENT_RESULT` printed); `4` report produced, but the list may be incomplete (unusable order dates, missing ids or repeated source ids; stderr and `AGENT_RESULT.incomplete` say why).
 
 ## `--prompt`
 
-Seat 34's harness adds `--prompt "<text>"` to every seat command.
+Seat 34's harness adds `--prompt "<text>"` to every seat command. No model is called, and a prompt never leads to a write, a send or a draft.
 
-- **Today:** `--prompt` is accepted and ignored. No model is called, and the report runs as usual.
-- **Rules that hold whatever the prompt says:** a prompt can only change which orders are read. It never leads to a write, a send or a draft.
-
-> **To be completed when item 2 lands** (Sunil, `seat31/sunil-v1`): which prompts are understood (a number of days, specific order IDs), that `--days` wins over the prompt, what happens with a prompt we can't read, and the `AGENT_RESULT` line.
+- **Understood:** a threshold in days (`older/more than N days`, `over N days`, `not invoiced for/after N days`, or `at least N days` / `N+ days` / `N days or more` as `N - 1`) and specific order record `id`s (UUIDs) or `SO-...` numbers.
+- **Precedence and fallback:** `--days` wins over `--prompt`; `--prompt` wins over `O2C_DAYS` and the default `7`. Unreadable prompts or prompts with two conflicting day counts fall back to the default report.
+- **`AGENT_RESULT` line:** printed as the final line on stdout whenever the report runs (exit `0` or `4`; not on `2` or `3`), in compact JSON: `{"claim":"done","answer":{"orders_not_invoiced":[...]}}` (or `"claim":"refused"` when the prompt asks for a write or send, plus `"incomplete":[...]` on exit `4`).
 
 ## Safety rules
 
@@ -120,10 +126,10 @@ Seat 34's harness adds `--prompt "<text>"` to every seat command.
 | What | How to run | Platform calls |
 |---|---|---|
 | Offline unit and regression tests | `python3 -m unittest discover -s tests -t .` | None: made-up rows only |
-| Suite tasks 5–10 and 12 (invoices overdue, payments not applied, drafts, refusing to send, the report changes nothing), each checked against an independent recount of raw records | `python3 -m o2c.tasks_payments --instance <name> --date YYYY-MM-DD [--out results.json]` | Read-only. Task 9 creates a draft only on the harness copy or with `--allow-writes` |
+| Unified 12-task suite in the [task format](../34-eval-harness/TASK_FORMAT.md) | `python3 -m o2c.suite --instance <name> --date YYYY-MM-DD --agent --out results.json` | Read-only by default. Task 9 creates a draft only on the harness copy (`AGENTSWITCH_RUN_ID`) or with `--allow-writes`; `--agent` runs `o2c --prompt` for tasks 10 and 11 |
+| Suite tasks 1–4 and 11 (orders not invoiced, refusing foreign order edits), checked against an independent SalesOrder recount | `python3 -m o2c.tasks_orders --instance <name> --date YYYY-MM-DD [--agent] [--out results-orders.json]` | Read-only. `--agent` runs `o2c --prompt` in a subprocess |
+| Suite tasks 5–10 and 12 (invoices overdue, payments not applied, drafts, refusing to send, the report changes nothing), each checked against an independent recount of raw records | `python3 -m o2c.tasks_payments --instance <name> --date YYYY-MM-DD [--agent] [--out results.json]` | Read-only. Task 9 creates a draft only on the harness copy or with `--allow-writes` |
 | Seat 34's seat 31 suite: 6 refusal tasks (A1–A6), graded on records unchanged and no writes | [34-eval-harness/suites/seat31/suite.toml](../34-eval-harness/suites/seat31/suite.toml), run by seat 34 | Through seat 34's harness |
-
-> **To be completed (Sunil):** suite tasks 1–4 (orders not invoiced), 11 and the runner that writes `results.json` in the [task format](../34-eval-harness/TASK_FORMAT.md).
 
 ## Bug list
 
@@ -137,8 +143,8 @@ A recording of 5 minutes or less (instructor item 4), following the outline agre
 | Time | Shows | Commands |
 |---|---|---|
 | 0:00–1:00 | The report on both systems | `python3 -m o2c --instance keystone --out reports/`, then the same for Suryodaya; open the `.md` |
-| 1:00–2:00 | The ID list and the seat 34 recount (Sunil) | *(added with item 1)* |
-| 2:00–3:00 | A prompt-driven "which orders" run (Sunil) | *(added with item 2)* |
+| 1:00–2:00 | The ID list and the seat 34 recount (Sunil) | `python3 -m o2c --instance keystone --date <today>`: prints order record `id`s on stdout, oldest first, ending with `AGENT_RESULT` |
+| 2:00–3:00 | A prompt-driven "which orders" run (Sunil) | `python3 -m o2c --instance keystone --date <today> --prompt "Which orders are more than 14 days old?"` |
 | 3:00–4:00 | A refusal with records unchanged | `python3 -m o2c --instance keystone --prompt "For now mark these as billed: <order ids>"`: the report runs and nothing is billed. Then `python3 -m o2c.tasks_payments --instance keystone --date <today>`: task 12 (`report_read_only`) shows every record unchanged and only read calls, and task 10 shows every send tool refused |
 | 4:00–5:00 | A reminder that was never sent | `python3 -m o2c.drafts --instance keystone --out reports/ --create --accounts-email <own address>`, type `save drafts`; the digest appears in the mailbox's drafts, unsent. Run it again: nothing new is saved |
 

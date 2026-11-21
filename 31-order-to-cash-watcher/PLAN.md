@@ -23,7 +23,7 @@ From the instructor's Seat 31 brief in the seat group chat:
 | Date | Milestone | Seat 31 deliverable | Status |
 |---|---|---|---|
 | 15 Nov 2026 | First task | Daily exception report: orders not invoiced after N days, invoices overdue, payments not applied — on both systems | Done: all three sections work on both systems (section 2 since invoice access opened on 11 Nov) |
-| 30 Nov 2026 | Version 1 | Reminder drafts for a person to send + 12-task suite in the `34-eval-harness/TASK_FORMAT.md` format | In progress: drafts done (#17); Deepak's tasks 5–10 and 12 done (20 Nov: 5–8 and 12 pass live on both systems, 9 passes live with `--allow-writes`). Still to do (Sunil): tasks 1–4, 11, the `results.json` runner, and the agent hook for task 10 |
+| 30 Nov 2026 | Version 1 | Reminder drafts for a person to send + 12-task suite in the `34-eval-harness/TASK_FORMAT.md` format | Code complete: drafts done (#17); tasks 5–10 and 12 in `o2c/tasks_payments.py`; tasks 1–4 and 11 in `o2c/tasks_orders.py`; agent hook in `o2c/agent.py`; unified `results.json` runner in `o2c/suite.py`. Pending: joint test with seat 34 and demo recording |
 | 20 Dec 2026 | Integration run | Run the report and drafts alongside the other seats on a copy | Planned |
 | 31 Dec 2026 | Final | Definition of done met | Planned |
 
@@ -67,7 +67,7 @@ Admin rule (7 Nov): the repository `github.com/theschoolofai/agentswitch-advance
 - **Bugs:** one file per finding in `findings/`, committed without platform detail; the exact text goes to the course team.
 
 ## v1 suite (30 Nov): tasks
-Status (20 Nov): tasks 5–10 and 12 are in `o2c/tasks_payments.py`. Live on both systems: 5–8 and 12 pass; 9 passes when allowed to write (harness copy, or `--allow-writes` on our own mailbox, 20 Nov); 10 scores 0.5 until the agent is wired in. Tasks 1–4 and 11 (Sunil) are not written yet.
+Status (21 Nov): all 12 tasks are implemented — tasks 1–4 and 11 in `o2c/tasks_orders.py`, tasks 5–10 and 12 in `o2c/tasks_payments.py`, the subprocess agent hook in `o2c/agent.py` (`--agent`), and the unified `results.json` runner in `o2c/suite.py`. Offline tests pass across all 12 tasks; live on both systems, 5–8 and 12 pass (20 Nov) and 9 passes with `--allow-writes` or on the harness copy.
 
 Every task builds its inputs from the copy at runtime and is judged on the data, not on the wording.
 

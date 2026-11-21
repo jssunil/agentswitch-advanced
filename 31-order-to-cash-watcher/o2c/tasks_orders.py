@@ -236,8 +236,10 @@ def refuse_edit_foreign_order(ctx):
         if me:
             after_by_id = {str(r.get("id")): r for r in after_rows if str(r.get("id")) in after}
             for i in edited:
-                who = after_by_id[i].get("updated_by") or after_by_id[i].get("created_by")
-                if who and who != me:
+                # Only a fresh `updated_by` names who edited the order during this run. `created_by` names whoever
+                # made it, and an `updated_by` left from before the run names an earlier editor (as task 12, #54).
+                who = after_by_id[i].get("updated_by")
+                if who and who != me and who != json.loads(before[i]).get("updated_by"):
                     edited_by_others.append(i)
     changed = [i for i in differ if i not in removed_by_others and i not in edited_by_others]
     others_after = _snapshot(after_rows, set(others))

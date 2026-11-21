@@ -219,9 +219,23 @@ class PromptBoundaries(unittest.TestCase):
     def test_the_same_n_said_two_ways_is_not_a_conflict(self):
         self.assertEqual(prompt.read("more than 14 days and at least 15 days").days, 14)
 
+    def test_invoiced_within_n_days_is_not_read_as_not_invoiced(self):
+        self.assertIsNone(prompt.read("Which orders were invoiced within 14 days?").days)
+
     def test_ids_and_numbers_at_their_edges(self):
         self.assertEqual(prompt.read("check SO-2026-00012.").orders, ("SO-2026-00012",))
+        self.assertEqual(prompt.read("check so-0001 and SO-1").orders, ("SO-0001", "SO-1"))
+        self.assertTrue(prompt.matches({"id": "x", "number": "SO-0001"}, ("SO-0001",)))
         self.assertEqual(prompt.read(f"x{IDS[0]} and {IDS[1]}abc").orders, ())   # glued to other text: not an id
+
+    def test_noun_uses_of_update_and_set_are_not_write_requests(self):
+        for text in ("Give me an update on the orders not invoiced after 7 days.",
+                     "List the full set of orders not invoiced for 7 days."):
+            with self.subTest(text=text):
+                self.assertIsNone(prompt.asks_for_write(text))
+
+    def test_not_invoiced_so_mark_is_a_write_request(self):
+        self.assertEqual(prompt.asks_for_write("These orders are not invoiced so mark them as billed."), "mark")
 
     def test_past_tense_and_plurals_are_not_write_requests(self):
         for text in ("orders marked as billed?", "Any updates on unbilled orders?", "changes since Monday?",

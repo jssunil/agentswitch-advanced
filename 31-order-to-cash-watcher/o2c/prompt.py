@@ -23,24 +23,26 @@ MAX_DAYS = 3650
 _N = r"(\d{1,4})"
 # More than N days: N is used as is.
 _MORE_THAN = re.compile(r"\b(?:older\s+than|more\s+than|over|beyond|exceeding)\s+" + _N + r"\s*days?\b"
-                        r"|\binvoiced\s+(?:for|after|in|within)\s+" + _N + r"\s*days?\b", re.I)
+                        r"|\bnot\s+invoiced\s+(?:for|after)\s+" + _N + r"\s*days?\b", re.I)
 # N days or more: the report's rule is "more than N", so N - 1.
 _AT_LEAST = re.compile(r"\bat\s+least\s+" + _N + r"\s*days?\b|\b" + _N + r"\s*\+\s*days?\b"
                        r"|\b" + _N + r"\s*days?\s+(?:or\s+(?:more|older|longer)|and\s+(?:more|older))\b", re.I)
 _UUID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I)
-_NUMBER = re.compile(r"\bSO-[A-Za-z0-9][A-Za-z0-9/-]*[A-Za-z0-9]\b")
+_NUMBER = re.compile(r"\bSO-[A-Za-z0-9](?:[A-Za-z0-9/-]*[A-Za-z0-9])?\b", re.I)
 # Asking for a change to a record or a message: seat 34's refusal tasks A1-A6 ("mark these as billed",
 # "allocate it", "change them", "push the order date", "create the invoices") and sends ("send it now").
 # Nouns that double as verbs ("invoice", "bill", "email", "close to 30 days") are left out: a recount
 # question such as "which orders should we invoice?" is not a request to change anything.
 _WRITE = re.compile(r"\b(mark|allocate|change|update|edit|modify|push|move|set|create|delete|remove|"
                     r"cancel|approve|send|post|reverse|void|adjust|reschedule)\b", re.I)
+_NOUN_BEFORE = re.compile(r"\b(?:a|an|the|any|no|status|daily|quick|full|entire|complete|whole)\s+$", re.I)
+_NOUN_WORDS = frozenset({"update", "set", "change", "post"})
 _NEG = r"\b(?:don'?t|do\s+not|never|without|no\s+need\s+to|not)"
 # A negation reaches the verb directly (up to 3 words between, no comma: "do not edit", "never ever change"), or
 # across one aside that starts right after it ("do not, under any circumstances, change"). It never crosses a
-# sentence end, and a comma after other words ends it: "If it's not billed, mark it billed" is a request.
+# sentence end or clause turn ("not invoiced so mark", "not a bug; push"), and a comma after other words ends it.
 _NEGATED = re.compile(_NEG + r"(?:\s+[\w']+){0,3}\s+$|" + _NEG + r",[^,.?!;\n]{1,60},\s*(?:[\w']+\s+){0,2}$", re.I)
-_SENTENCE_END = re.compile(r"[.?!;\n]")
+_SENTENCE_END = re.compile(r"[.?!;\n]|\b(?:so|but|then)\b", re.I)
 
 
 @dataclass(frozen=True)
@@ -57,11 +59,18 @@ def _numbers(pattern, text):
 
 def asks_for_write(text):
     """The first verb asking for a change, or None. "don't change anything" is not a request."""
-    for m in _WRITE.finditer(text or ""):
-        sentence = _SENTENCE_END.split(text[max(0, m.start() - 120):m.start()])[-1]
+    source = text or ""
+    for m in _WRITE.finditer(source):
+        word = m.group(1).lower()
+        before = source[max(0, m.start() - 25):m.start()]
+        if word in _NOUN_WORDS and _NOUN_BEFORE.search(before):
+            continue
+        if word == "set" and re.match(r"\s+of\b", source[m.end():m.end() + 8], re.I):
+            continue
+        sentence = _SENTENCE_END.split(source[max(0, m.start() - 120):m.start()])[-1]
         if _NEGATED.search(sentence):
             continue
-        return m.group(1).lower()
+        return word
     return None
 
 
@@ -78,7 +87,7 @@ def read(text):
         notes.append("days ignored: out of range")
         days = set()
     orders = tuple(dict.fromkeys([m.group(0).lower() for m in _UUID.finditer(text)]
-                                 + [m.group(0) for m in _NUMBER.finditer(text)]))
+                                 + [m.group(0).upper() for m in _NUMBER.finditer(text)]))
     day = next(iter(days)) if days else None
     if day is not None:
         notes.append(f"orders more than {day} days old")
@@ -91,4 +100,4 @@ def read(text):
 
 def matches(row, orders):
     """True if the report row is one of the orders named in the prompt."""
-    return str(row.get("id") or "").lower() in orders or (row.get("number") or "") in orders
+    return str(row.get("id") or "").lower() in orders or (row.get("number") or "").upper() in orders

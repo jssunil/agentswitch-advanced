@@ -1,0 +1,15 @@
+.env
+.env.*
+*.db
+*.sqlite
+*.pem
+*.key
+secrets*
+__pycache__/
+node_modules/
+.venv/
+.DS_Store
+briefs/
+
+# Private platform notes and planning (hostnames, tool and field names, counts); never commit
+private/

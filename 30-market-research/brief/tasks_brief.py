@@ -1,4 +1,4 @@
-"""Seat 30 suite, tasks 7-12 (Deepak). Tasks 1-6 are in tasks_deals.py (Sunil).
+"""Seat 30 suite, tasks 7-12 (Deepak), in suite order. Tasks 1-6 are in tasks_deals.py (Sunil).
 
 Each task is (task_id, title, fn), and fn(client, ctx) returns {passed, score, evidence}
 (PLAN.md, "Interfaces", 8). ctx is a dict: instance, as_of (a date), workdir (a scratch
@@ -91,6 +91,138 @@ def _scratch(ctx, name):
 
 def _week_before(ctx):
     return ctx["as_of"] - timedelta(days=7)
+
+
+# ---------------------------------------------------------------- task 7
+
+CONTACT_TYPES = frozenset({"call", "meeting", "email"})
+
+
+def expected_facts(row, parties, activities, as_of):
+    """The account facts task 7 expects for one deal, recounted here from raw records with the
+    rules in PLAN.md ("Account facts rules"), never from accounts.py:
+
+    - name: the account's (Party) name; None, and "name" in `redacted`, if hidden from this seat.
+    - The deal's own activities count first. Only if it has none, the account's are used
+      (source "party"). source is None when there are neither.
+    - last_contact: the latest done, not cancelled call, meeting or email dated on or before
+      as_of, as {date, type}; None if there is none.
+    - open_activities: every activity not done and not cancelled, as {id, due_date, overdue},
+      where overdue means due before as_of.
+    """
+    party = parties.get(row.party_id)
+    redacted = set((party or {}).get("_redacted_fields") or ())
+    name = None if party is None or "name" in redacted else party.get("name")
+    pool = [a for a in activities if row.id and a.get("deal_id") == row.id]
+    source = "deal" if pool else None
+    if not pool and row.party_id:
+        pool = [a for a in activities if a.get("party_id") == row.party_id]
+        source = "party" if pool else None
+    last = None
+    for a in pool:
+        if a.get("done") is not True or a.get("cancelled") is True or a.get("type") not in CONTACT_TYPES:
+            continue
+        day = _day_or_none(a.get("due_date"))
+        if day is None or day > as_of:
+            continue
+        key = (day, str(a.get("id")))
+        if last is None or key > last[0]:
+            last = (key, {"date": day.isoformat(), "type": a.get("type")})
+    open_ = sorted(({"id": str(a.get("id")), "due_date": _iso(_day_or_none(a.get("due_date"))),
+                     "overdue": bool(_day_or_none(a.get("due_date")) and _day_or_none(a.get("due_date")) < as_of)}
+                    for a in pool if a.get("done") is not True and a.get("cancelled") is not True),
+                   key=lambda x: (x["due_date"] is None, x["due_date"] or "", x["id"]))
+    return {"name": name, "name_redacted": "name" in redacted, "source": source,
+            "last_contact": None if last is None else last[1], "open_activities": open_}
+
+
+def _day_or_none(value):
+    from .values import business_date
+    try:
+        return business_date(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def _iso(day):
+    return None if day is None else day.isoformat()
+
+
+def _facts_source(client, ctx, build):
+    """(mode, {deal id: (row, facts)}) from the brief, or from accounts.facts() before the brief exists."""
+    build = build if build is not None else _build()
+    if build is not None:
+        out = build(client, ctx["instance"], ctx["as_of"], snapshots=_scratch(ctx, "t7"))
+        return "full", {d["row"]["id"]: (from_dict(d["row"]), d.get("account")) for d in out["deals"]}
+    try:
+        from .accounts import facts
+    except ImportError:
+        return None, {}
+    shown = sorted(_open(_independent_rows(client)), key=lambda r: r.id)[:COMPONENT_TOP]
+    return "component", {r.id: (r, facts(client, r, ctx["as_of"])) for r in shown}
+
+
+def _compare_facts(want, got):
+    """Names of the facts that differ (empty when they all match)."""
+    if not isinstance(got, dict):
+        return ["no account facts"]
+    wrong = []
+    if want["name_redacted"]:
+        if got.get("name") is not None or "name" not in (got.get("redacted") or ()):
+            wrong.append("redacted name shown")
+    elif display_text(want["name"] or "") != display_text(got.get("name") or ""):
+        wrong.append("name")
+    if want["source"] != got.get("source"):
+        wrong.append("source")
+    lc = got.get("last_contact")
+    got_lc = None if lc is None else ({"date": _iso(_day_or_none(lc.get("date"))), "type": lc.get("type")}
+                                      if isinstance(lc, dict) else "bad")
+    if got_lc != want["last_contact"]:
+        wrong.append("last_contact")
+    acts = got.get("open_activities")
+    if not isinstance(acts, list) or any(not isinstance(a, dict) for a in acts):
+        wrong.append("open_activities")
+    else:
+        got_open = sorted(((str(a.get("id")), _iso(_day_or_none(a.get("due_date"))), bool(a.get("overdue")))
+                           for a in acts), key=lambda t: (t[1] is None, t[1] or "", t[0]))
+        want_open = [(a["id"], a["due_date"], a["overdue"]) for a in want["open_activities"]]
+        if got_open != want_open:
+            wrong.append("open_activities")
+    return wrong
+
+
+def account_facts(client, ctx, build=None):
+    """For every deal the brief shows: the account name, where the activities came from (deal or
+    account), the last contact and the open activities match a recount from raw Party and
+    Activity records. Partial credit: the share of deals whose facts all match."""
+    try:
+        mode, shown = _facts_source(client, ctx, build)
+        if mode is None:
+            return {"passed": False, "score": 0.0,
+                    "evidence": "infrastructure: neither brief.report nor brief.accounts is built yet"}
+        if not shown:
+            return _result(False, "infrastructure: the brief showed no deals", mode=mode)
+        parties = {p.get("id"): p for p in client.list_all("Party")}
+        activities = client.list_all("Activity")
+        as_of = ctx["as_of"]
+        wrong_by_fact, wrong_deals, with_activity = {}, 0, 0
+        for deal_id, (row, got) in shown.items():
+            want = expected_facts(row, parties, activities, as_of)
+            if want["last_contact"] or want["open_activities"]:
+                with_activity += 1
+            wrong = _compare_facts(want, got)
+            if wrong:
+                wrong_deals += 1
+                for w in wrong:
+                    wrong_by_fact[w] = wrong_by_fact.get(w, 0) + 1
+        evidence = (f"verifier=facts_recount; deals={len(shown)}; with_activity={with_activity}; "
+                    f"wrong_deals={wrong_deals}; wrong_by_fact={dict(sorted(wrong_by_fact.items()))}")
+        if not with_activity:
+            evidence += "; no shown deal or its account has activities, so only names were checked"
+        score = round((len(shown) - wrong_deals) / len(shown), 2)
+        return _result(not wrong_deals, evidence, score=score, mode=mode)
+    except Exception as e:
+        return _infrastructure(e)
 
 
 # ---------------------------------------------------------------- task 8
@@ -379,6 +511,7 @@ def brief_read_only(client, ctx, build=None):
 
 
 TASKS = [
+    ("account_facts", "Account name, last contact and open activities match the records", account_facts),
     ("what_changed", "A seeded stage or value change is reported; an unchanged deal is not", what_changed),
     ("no_invented_change", "The first run is a baseline and no change is invented", no_invented_change),
     ("next_step_rule", "A deal whose close date has passed gets the close-date step and its reason", next_step_rule),

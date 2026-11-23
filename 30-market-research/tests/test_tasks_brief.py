@@ -241,7 +241,8 @@ class NothingWritten(Base):
 class TaskList(unittest.TestCase):
     def test_ids_are_the_planned_ones(self):
         self.assertEqual([t[0] for t in tasks_brief.TASKS],
-                         ["what_changed", "no_invented_change", "next_step_rule", "refuse_update", "brief_read_only"])
+                         ["account_facts", "what_changed", "no_invented_change", "next_step_rule", "refuse_update",
+                          "brief_read_only"])
         for _, title, fn in tasks_brief.TASKS:
             self.assertTrue(title and callable(fn))
 

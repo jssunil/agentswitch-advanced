@@ -1,0 +1,139 @@
+"""Seat 30 suite runner: runs the 12 tasks and writes results.json (34-eval-harness/TASK_FORMAT.md).
+
+    python3 -m brief.suite --instance keystone --out results.json [--date YYYY-MM-DD] [--only id,id]
+
+Tasks 1-6 come from tasks_deals.TASKS (Sunil) and 7-12 from tasks_brief.TASKS (Deepak), in suite
+order. Every planned task is reported. A task whose module isn't built yet, or that crashes, is
+a failure marked infrastructure, never dropped. If the platform can't be reached at all,
+results.json is still written (every task an infrastructure failure), and the exit code is 3.
+
+--date defaults to today in IST, so a harness run needs no date. Snapshots and other scratch
+files go to a temporary folder that is removed afterwards.
+"""
+import argparse
+import json
+import os
+import sys
+import tempfile
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+
+from .client import EXIT_PLATFORM, Client, McpError
+from .values import display_text
+
+# Suite numbers 1-12 (PLAN.md, "v1 suite (30 Nov): tasks").
+PLANNED = ("top10_ids", "open_only", "unknown_stage", "currency_safe", "zero_value", "tie_break",
+           "account_facts", "what_changed", "no_invented_change", "next_step_rule", "refuse_update",
+           "brief_read_only")
+IST = timezone(timedelta(hours=5, minutes=30))
+INSTANCES = ("suryodaya", "keystone")
+
+
+def today_ist():
+    return datetime.now(IST).date()
+
+
+def all_tasks():
+    """[(task_id, title, fn or None, why_missing)] for every planned task, in suite order, then any
+    extra task a module adds (so a new task is never dropped)."""
+    found, missing_modules = {}, []
+    for module in ("tasks_deals", "tasks_brief"):
+        try:
+            mod = __import__(f"{__package__}.{module}", fromlist=["TASKS"])
+        except ImportError:
+            missing_modules.append(module)
+            continue
+        for task_id, title, fn in getattr(mod, "TASKS", ()):
+            found.setdefault(task_id, (title, fn))
+    why = f"{', '.join(missing_modules)} not built yet" if missing_modules else "task not in any TASKS list"
+    tasks = [(t, *found[t], None) if t in found else (t, t.replace("_", " "), None, why) for t in PLANNED]
+    tasks += [(t, title, fn, None) for t, (title, fn) in found.items() if t not in PLANNED]
+    return tasks
+
+
+def run_suite(client, instance, as_of, only=None, platform_error=None):
+    """The TASK_FORMAT.md payload. With `platform_error`, nothing runs and every task says why."""
+    results = []
+    with tempfile.TemporaryDirectory(prefix="seat30-suite-") as workdir:
+        ctx = {"instance": instance, "as_of": as_of, "workdir": workdir}
+        for task_id, title, fn, missing in all_tasks():
+            if only and task_id not in only:
+                continue
+            if platform_error is not None:
+                r = _infrastructure(f"the platform could not be reached: {platform_error}")
+            elif fn is None:
+                r = _infrastructure(missing)
+            else:
+                try:
+                    r = fn(client, ctx)
+                except Exception as e:      # tasks catch their own errors; this is the last guard
+                    r = _infrastructure(f"{type(e).__name__}: {e}")
+                r = _checked(r)
+            results.append({"id": f"{instance}:{task_id}", "title": title, **r})
+    passed = sum(1 for r in results if r["passed"])
+    return {"tasks": results, "summary": f"{instance}: {passed}/{len(results)} tasks passed"}
+
+
+def write_results(path, payload):
+    """UTF-8 JSON, written in full or not at all; NaN and Infinity refused."""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(payload, indent=2, allow_nan=False, ensure_ascii=False)
+    fd, temporary = tempfile.mkstemp(prefix=".results-", suffix=".json", dir=target.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(temporary, target)
+    except BaseException:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+        raise
+
+
+def _infrastructure(reason):
+    return {"passed": False, "score": 0.0, "evidence": f"infrastructure: {display_text(reason)[:200]}"}
+
+
+def _checked(r):
+    """A task result in the required shape, or an infrastructure failure saying what was wrong."""
+    if not isinstance(r, dict) or not isinstance(r.get("passed"), bool) or not isinstance(r.get("evidence"), str):
+        return _infrastructure("the task returned a result in the wrong shape")
+    score = r.get("score")
+    if isinstance(score, bool) or not isinstance(score, (int, float)) or not 0.0 <= score <= 1.0:
+        return _infrastructure("the task returned a score outside 0.0-1.0")
+    if r["passed"] and score == 0.0:
+        return _infrastructure("the task passed with a score of 0")
+    return {"passed": r["passed"], "score": float(score), "evidence": display_text(r["evidence"])}
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="brief.suite", description="Run the seat 30 suite and write results.json")
+    ap.add_argument("--instance", default=os.environ.get("AGENTSWITCH_INSTANCE"), choices=INSTANCES,
+                    required=not os.environ.get("AGENTSWITCH_INSTANCE"))
+    ap.add_argument("--date", type=date.fromisoformat, help="the brief's date (default: today in IST)")
+    ap.add_argument("--only", type=lambda v: {x.strip() for x in v.split(",") if x.strip()},
+                    help="comma-separated task ids")
+    ap.add_argument("--out", help="write results JSON here (e.g. results.json)")
+    args = ap.parse_args(argv)
+    if args.only and args.only - set(PLANNED):
+        ap.error(f"unknown task ids: {', '.join(sorted(args.only - set(PLANNED)))}")
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
+
+    client, platform_error = None, None
+    try:
+        client = Client()
+    except McpError as e:
+        platform_error = display_text(e)
+    out = run_suite(client, args.instance, args.date or today_ist(), args.only, platform_error)
+    if args.out:
+        write_results(args.out, out)
+    for r in out["tasks"]:
+        print(f"{'PASS' if r['passed'] else 'FAIL'} {r['score']:.2f} {r['id']}: {r['evidence']}")
+    print(out["summary"])
+    return EXIT_PLATFORM if platform_error else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

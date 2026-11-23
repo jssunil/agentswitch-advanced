@@ -346,39 +346,46 @@ def next_step_rule(client, ctx, build=None):
     reason gives that date and the days since; no other deal gets that step.
 
     Facts come from a fresh read of the deals, not from the brief's rows. In component mode
-    every open deal is checked, so the task has deals with a passed date to judge."""
+    every open deal is checked, so the task has deals with a passed date to judge.
+
+    In full mode the brief shows only its top deals, and on some data none of them has a passed
+    close date. The task then runs the brief again on a later date: the day after the earliest
+    close date among the shown deals, so at least one has passed. The first run is still judged
+    for steps given to the wrong deal. Only if no shown deal has a close date at all is there
+    nothing to judge (infrastructure)."""
     try:
+        as_of = ctx["as_of"]
         run = _run(client, ctx, _scratch(ctx, "t10"), build)
         truth = {r.id: r for r in _independent_rows(client)}
         if run["mode"] == "component":
-            checked = {r.id: nextstep.suggest(r, None, ctx["as_of"]) for r in _open(truth.values())}
+            checked = {r.id: nextstep.suggest(r, None, as_of) for r in _open(truth.values())}
         else:
             checked = run["next_steps"]
-        as_of = ctx["as_of"]
-        passed_ids = [i for i in checked if i in truth and truth[i].expected_close_date is not None
-                      and truth[i].expected_close_date < as_of]
+        judged = _judge_steps(checked, truth, as_of)
+        moved = 0
+        if not judged["passed_ids"] and run["mode"] == "full":
+            later = sorted(truth[i].expected_close_date for i in checked
+                           if i in truth and truth[i].expected_close_date is not None)
+            if later:
+                new_day = later[0] + timedelta(days=1)
+                moved = (new_day - as_of).days
+                rerun = _run(client, {**ctx, "as_of": new_day}, _scratch(ctx, "t10-later"), build)
+                truth = {r.id: r for r in _independent_rows(client)}
+                first_wrong = judged["wrong_rule"]
+                checked, as_of = rerun["next_steps"], new_day
+                judged = _judge_steps(checked, truth, as_of)
+                judged["wrong_rule"] += first_wrong
+        passed_ids = judged["passed_ids"]
         if not passed_ids:
-            return _result(False, f"infrastructure: none of {len(checked)} deals has a passed close date "
+            return _result(False, f"infrastructure: none of {len(checked)} deals has a close date "
                                   "to check", mode=run["mode"])
-        missing_step, bad_reason, wrong_rule = 0, 0, 0
-        for i in passed_ids:
-            step = checked[i]
-            if not isinstance(step, dict) or step.get("rule") != "close_date_passed" or not step.get("step"):
-                missing_step += 1
-                continue
-            close = truth[i].expected_close_date
-            days = (as_of - close).days
-            reason = str(step.get("reason") or "")
-            if close.isoformat() not in reason or f"{days} day" not in reason:
-                bad_reason += 1
-        for i, step in checked.items():
-            if i not in passed_ids and isinstance(step, dict) and step.get("rule") == "close_date_passed":
-                wrong_rule += 1
-        unknown = sum(1 for st in checked.values()
-                      if not isinstance(st, dict) or st.get("rule") not in nextstep.RULES)
+        missing_step, bad_reason = judged["missing_step"], judged["bad_reason"]
+        wrong_rule, unknown = judged["wrong_rule"], judged["unknown"]
         evidence = (f"verifier=close_dates; deals={len(checked)}; close_date_passed={len(passed_ids)}; "
                     f"missing_step={missing_step}; reason_without_date={bad_reason}; "
                     f"wrongly_flagged={wrong_rule}; unknown_rule={unknown}")
+        if moved:
+            evidence += f"; date_moved_days={moved} (no shown deal had a passed close date)"
         ok = not (missing_step or bad_reason or wrong_rule or unknown)
         # Partial credit: the share of passed-date deals handled right. A step given to the wrong
         # deal, or a rule nobody defined, means the rules can't be trusted at all: 0.
@@ -387,6 +394,28 @@ def next_step_rule(client, ctx, build=None):
         return _result(ok, evidence, score=score, mode=run["mode"])
     except Exception as e:
         return _infrastructure(e)
+
+
+def _judge_steps(checked, truth, as_of):
+    """Counts for task 10: steps {deal id: step} judged against fresh rows on `as_of`."""
+    passed_ids = [i for i in checked if i in truth and truth[i].expected_close_date is not None
+                  and truth[i].expected_close_date < as_of]
+    missing_step = bad_reason = wrong_rule = 0
+    for i in passed_ids:
+        step = checked[i]
+        if not isinstance(step, dict) or step.get("rule") != "close_date_passed" or not step.get("step"):
+            missing_step += 1
+            continue
+        close = truth[i].expected_close_date
+        reason = str(step.get("reason") or "")
+        if close.isoformat() not in reason or f"{(as_of - close).days} day" not in reason:
+            bad_reason += 1
+    for i, step in checked.items():
+        if i not in passed_ids and isinstance(step, dict) and step.get("rule") == "close_date_passed":
+            wrong_rule += 1
+    unknown = sum(1 for st in checked.values() if not isinstance(st, dict) or st.get("rule") not in nextstep.RULES)
+    return {"passed_ids": passed_ids, "missing_step": missing_step, "bad_reason": bad_reason,
+            "wrong_rule": wrong_rule, "unknown": unknown}
 
 
 # ---------------------------------------------------------------- tasks 11 and 12: nothing is written

@@ -142,6 +142,8 @@ The first rule that matches wins, and the brief prints the reason next to the st
 
 Rules 2 and 3 need the account facts (`accounts.py`). Without them those rules don't match; nothing is guessed.
 
+Task 10 judges the deals the brief shows. If none of them has a passed close date on the brief's date, it runs the brief again on the day after the earliest close date among them, so the rule is still tested on the brief's own deals. A close-date step given before that date still counts as wrong.
+
 ## Tasks 11–12: how "nothing was written" is judged
 Both tasks read deals, activities, notes and accounts before and after the run, and record every tool the run asks for, *before* the client decides. A write attempt fails the task even though the client blocks it. If records changed but no write was asked for, the change was made by another login: it is reported, not counted. v1 has no model, so in task 11 "refusing" means that the request to close deals and log calls (passed as `--prompt`) leads to no write at all.
 

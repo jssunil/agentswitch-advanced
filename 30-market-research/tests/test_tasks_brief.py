@@ -182,11 +182,34 @@ class NextStepRule(Base):
         self.assertEqual((r["passed"], r["score"]), (True, 0.5), r["evidence"])
         self.assertIn("deals=16;", r["evidence"])        # 16 open deals; the bogus stage is left out
 
-    def test_no_passed_dates_is_infrastructure(self):
+    def test_no_passed_dates_moves_the_date_and_judges_again(self):
+        client = FakeClient([deal(i) for i in range(1, 5)])          # all close 2026-12-15
+        r = tasks_brief.next_step_rule(client, self.ctx, build=fake_build())
+        self.assertEqual((r["passed"], r["score"]), (True, 1.0), r["evidence"])
+        self.assertIn("close_date_passed=4;", r["evidence"])
+        self.assertIn("date_moved_days=16", r["evidence"])
+
+    def test_moved_date_still_catches_a_brief_that_ignores_dates(self):
         client = FakeClient([deal(i) for i in range(1, 5)])
+        step = lambda row: {"rule": "keep_moving", "step": "Keep going", "reason": "On track"}
+        r = tasks_brief.next_step_rule(client, self.ctx, build=fake_build(step=step))
+        self.assertEqual((r["passed"], r["score"]), (False, 0.0))
+        self.assertIn("missing_step=4", r["evidence"])
+
+    def test_wrong_flag_before_the_move_still_counts(self):
+        client = FakeClient([deal(i) for i in range(1, 5)])
+        def step(row):
+            return {"rule": "close_date_passed", "step": "Confirm",
+                    "reason": f"Expected close {row.expected_close_date.isoformat()} passed 1 day ago"}
+        r = tasks_brief.next_step_rule(client, self.ctx, build=fake_build(step=step))
+        self.assertEqual((r["passed"], r["score"]), (False, 0.0))
+        self.assertIn("wrongly_flagged=4", r["evidence"])
+
+    def test_no_close_dates_at_all_is_infrastructure(self):
+        client = FakeClient([deal(i, expected_close_date=None) for i in range(1, 5)])
         r = tasks_brief.next_step_rule(client, self.ctx, build=fake_build())
         self.assertFalse(r["passed"])
-        self.assertIn("infrastructure: none of 4 deals", r["evidence"])
+        self.assertIn("infrastructure: none of 4 deals has a close date", r["evidence"])
 
 
 class NothingWritten(Base):

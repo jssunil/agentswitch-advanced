@@ -17,7 +17,7 @@ import tempfile
 from datetime import timedelta
 from decimal import Decimal
 
-from . import changes, nextstep
+from . import changes, nextstep, optional_module
 from .client import is_read_tool
 from .rows import from_dict, from_record, replace, stage_labels, to_dict
 from .values import display_text
@@ -51,11 +51,10 @@ def _independent_rows(client):
 
 
 def _build():
-    try:
-        from .report import build
-    except ImportError:
-        return None
-    return build
+    """report.build, or None while report.py doesn't exist. A report.py that exists but can't be
+    imported raises, and the task reports it as infrastructure (never a quiet component run)."""
+    report = optional_module("report")
+    return None if report is None else report.build
 
 
 def _run(client, ctx, folder, build=None, prompt=None):
@@ -154,10 +153,10 @@ def _facts_source(client, ctx, build):
     if build is not None:
         out = build(client, ctx["instance"], ctx["as_of"], snapshots=_scratch(ctx, "t7"))
         return "full", {d["row"]["id"]: (from_dict(d["row"]), d.get("account")) for d in out["deals"]}
-    try:
-        from .accounts import facts
-    except ImportError:
+    accounts = optional_module("accounts")
+    if accounts is None:
         return None, {}
+    facts = accounts.facts
     shown = sorted(_open(_independent_rows(client)), key=lambda r: r.id)[:COMPONENT_TOP]
     return "component", {r.id: (r, facts(client, r, ctx["as_of"])) for r in shown}
 
@@ -456,13 +455,14 @@ def _differences(before, after):
 
 def _no_writes(client, ctx, build, prompt, name):
     """Run the brief between two full reads. Returns (problems, evidence, mode)."""
+    build = build if build is not None else _build()     # a broken report.py raises here: infrastructure
+    mode, crashed = ("full" if build is not None else "component"), None
     before = _state(client)
     with _Recorder(client) as log:
         try:
-            run = _run(client, ctx, _scratch(ctx, name), build, prompt=prompt)
-            mode, crashed = run["mode"], None
+            _run(client, ctx, _scratch(ctx, name), build, prompt=prompt)
         except Exception as e:      # a refused write may surface as an error: still judged on data
-            mode, crashed = ("full" if (build or _build()) else "component"), type(e).__name__
+            crashed = type(e).__name__
     after = _state(client)
     attempts = sorted({t for t in log if t.startswith("raw:") or not is_read_tool(t)})
     changed, added, removed = _differences(before, after)

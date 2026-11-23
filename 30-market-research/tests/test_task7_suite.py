@@ -218,5 +218,76 @@ class Suite(unittest.TestCase):
         self.assertIsInstance(suite.today_ist(), date)
 
 
+
+class BrokenModules(unittest.TestCase):
+    """A module that exists but can't be imported is a failure, never "not built yet".
+    Imports are simulated, so these tests hold before and after Sunil's modules exist."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.ctx = {"instance": "keystone", "as_of": AS_OF, "workdir": self._tmp.name}
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    @staticmethod
+    def imports(missing=(), broken=()):
+        """importlib.import_module where `missing` modules don't exist and `broken` ones fail inside."""
+        import importlib
+        real = importlib.import_module
+
+        def fake(name, *a):
+            short = name.rsplit(".", 1)[-1]
+            if short in missing:
+                raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+            if short in broken:
+                raise ModuleNotFoundError("No module named 'brief.typo_inside'", name="brief.typo_inside")
+            return real(name, *a)
+        return mock.patch("importlib.import_module", fake)
+
+    def test_helper(self):
+        import brief
+        with self.imports(missing={"report"}):
+            self.assertIsNone(brief.optional_module("report"))
+        with self.imports(broken={"report"}), self.assertRaises(ModuleNotFoundError):
+            brief.optional_module("report")
+        self.assertIs(brief.optional_module("rows"), __import__("brief.rows").rows)
+
+    def test_broken_report_fails_tasks_instead_of_component_mode(self):
+        with self.imports(broken={"report"}):
+            for task in (tasks_brief.what_changed, tasks_brief.no_invented_change, tasks_brief.next_step_rule,
+                         tasks_brief.refuse_update, tasks_brief.brief_read_only, tasks_brief.account_facts):
+                r = task(client(), self.ctx)
+                self.assertEqual((r["passed"], r["score"]), (False, 0.0), task.__name__)
+                self.assertIn("infrastructure: ModuleNotFoundError", r["evidence"], task.__name__)
+                self.assertIn("typo_inside", r["evidence"], task.__name__)
+
+    def test_missing_report_still_means_component_mode(self):
+        with self.imports(missing={"report"}):
+            r = tasks_brief.brief_read_only(client(), self.ctx)
+        self.assertEqual((r["passed"], r["score"]), (True, 0.5), r["evidence"])
+
+    def test_broken_accounts_fails_task_7(self):
+        with self.imports(missing={"report"}, broken={"accounts"}):
+            r = tasks_brief.account_facts(client(), self.ctx)
+        self.assertEqual((r["passed"], r["score"]), (False, 0.0))
+        self.assertIn("typo_inside", r["evidence"])
+
+    def test_broken_tasks_deals_is_named_in_the_suite(self):
+        with self.imports(broken={"tasks_deals"}):
+            out = suite.run_suite(client(), "keystone", AS_OF, only={"top10_ids"})
+        self.assertIn("tasks_deals could not be imported: ModuleNotFoundError", out["tasks"][0]["evidence"])
+        self.assertIn("typo_inside", out["tasks"][0]["evidence"])
+
+    def test_missing_tasks_deals_is_not_built_yet(self):
+        with self.imports(missing={"tasks_deals"}):
+            out = suite.run_suite(client(), "keystone", AS_OF, only={"top10_ids"})
+        self.assertEqual(out["tasks"][0]["evidence"], "infrastructure: tasks_deals not built yet")
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
 if __name__ == "__main__":
     unittest.main()

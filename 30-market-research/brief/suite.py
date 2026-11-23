@@ -18,6 +18,7 @@ import tempfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from . import optional_module
 from .client import EXIT_PLATFORM, Client, McpError
 from .values import display_text
 
@@ -36,16 +37,19 @@ def today_ist():
 def all_tasks():
     """[(task_id, title, fn or None, why_missing)] for every planned task, in suite order, then any
     extra task a module adds (so a new task is never dropped)."""
-    found, missing_modules = {}, []
+    found, problems = {}, []
     for module in ("tasks_deals", "tasks_brief"):
         try:
-            mod = __import__(f"{__package__}.{module}", fromlist=["TASKS"])
-        except ImportError:
-            missing_modules.append(module)
+            mod = optional_module(module)
+        except Exception as e:      # the file exists but can't be imported: say why
+            problems.append(f"{module} could not be imported: {type(e).__name__}: {e}")
+            continue
+        if mod is None:
+            problems.append(f"{module} not built yet")
             continue
         for task_id, title, fn in getattr(mod, "TASKS", ()):
             found.setdefault(task_id, (title, fn))
-    why = f"{', '.join(missing_modules)} not built yet" if missing_modules else "task not in any TASKS list"
+    why = "; ".join(problems) or "task not in any TASKS list"
     tasks = [(t, *found[t], None) if t in found else (t, t.replace("_", " "), None, why) for t in PLANNED]
     tasks += [(t, title, fn, None) for t, (title, fn) in found.items() if t not in PLANNED]
     return tasks

@@ -121,5 +121,15 @@ class Snapshots(unittest.TestCase):
         self.assertIsInstance(r, DealRow)
 
 
+
+class DamagedSnapshotRows(unittest.TestCase):
+    def test_row_without_id_or_title_is_refused(self):
+        good = to_dict(from_record(deal()))
+        for bad in ({}, {**good, "id": None}, {**good, "id": ""}, {**good, "id": 7},
+                    {k: v for k, v in good.items() if k != "title"}, None, []):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                from_dict(bad)
+
+
 if __name__ == "__main__":
     unittest.main()

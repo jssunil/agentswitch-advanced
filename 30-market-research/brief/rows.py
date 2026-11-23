@@ -144,7 +144,11 @@ def to_dict(row):
 
 
 def from_dict(data):
-    """The inverse of to_dict(), for saved snapshots. Unknown keys are ignored."""
+    """The inverse of to_dict(), for saved snapshots. Unknown keys are ignored.
+    Raises ValueError for a row without an id or title, so a damaged snapshot is never read."""
+    if not isinstance(data, dict) or not isinstance(data.get("id"), str) or not data["id"] \
+            or not isinstance(data.get("title"), str):
+        raise ValueError("a saved deal row needs an id and a title")
     values = {name: data.get(name) for name in FIELDS}
     for name in ("value", "base_value", "probability"):
         values[name] = money(values[name])

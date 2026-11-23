@@ -26,7 +26,7 @@ Platform detail (hostnames, record counts, exact requests and replies) is kept o
 | Date | Milestone | Seat 30 deliverable | Status |
 |---|---|---|---|
 | 15 Nov 2026 | First task | Brief for the 10 largest open deals | Seat taken on 23 Nov; delivered with v1 (question 4) |
-| 30 Nov 2026 | Version 1 | First task + 12-task suite in the `34-eval-harness/TASK_FORMAT.md` format, both systems | In progress: setup done (`client.py`, `rows.py`) |
+| 30 Nov 2026 | Version 1 | First task + 12-task suite in the `34-eval-harness/TASK_FORMAT.md` format, both systems | In progress: setup done (`client.py`, `rows.py`). `changes.py` done; tasks 8–9 pass live on both systems in component mode (0.5 until `report.build()` exists) |
 | 20 Dec 2026 | Integration run | Brief alongside the other seats on a copy | Planned |
 | 31 Dec 2026 | Final | Definition of done met | Planned |
 
@@ -60,9 +60,9 @@ The two halves are built in parallel, so these are fixed now. Changing one needs
 1. **Deal row**: `brief/rows.py`, `DealRow` and `FIELDS` (the test `test_frozen_field_list` guards it). Build rows with `from_record(record, stage_labels(pipelines))`. Save and load with `to_dict` / `from_dict` (exact money as decimal text). `fixture_flag` is set only by `deals.py`, using `replace()`.
 2. **Ranking** (`deals.py`): `open_deals(rows) -> (ranked: list[DealRow], issues: list[{"deal_id", "issue"}])`, `top(ranked, n=10)`.
 3. **Account facts** (`accounts.py`): `facts(client, row) -> dict` with keys `party_id, name, type, city, state, currency, credit_limit, contacts, other_open_deals, last_contact {date, type, subject} | None, open_activities [{id, subject, due_date, overdue}], pinned_note {id, title} | None, redacted [field names], source "deal" | "party"`.
-4. **What changed** (`changes.py`): `save_snapshot(rows, instance, as_of, folder)`. `compare(rows, folder, instance, as_of) -> {baseline, previous_date, per_deal {deal id: [{field, before, after}]}, entered [deal ids], dropped [{id, title, reason}]}`.
+4. **What changed** (`changes.py`): `compare(rows, folder, instance, as_of, all_rows=None) -> {baseline, previous_date, per_deal {deal id: [{field, before, after}]}, entered [deal ids], dropped [{id, title, reason}]}`, then `save_snapshot(rows, instance, as_of, folder)`. Call them in that order. `rows` are the deals the brief shows, in rank order. Pass `all_rows` (every deal read this run) so a dropped deal gets its reason. `per_deal` only lists deals with changes. A damaged snapshot raises `SnapshotError`; the brief stops rather than compare against a guess.
 5. **Next step** (`nextstep.py`): `suggest(row, facts, as_of) -> {rule, step, reason}`.
-6. **Brief** (`report.py`): `build(client, instance, as_of, top=10, since=None, prompt=None, snapshots=None) -> {instance, date, since, baseline, deals [{rank, row, account, changes, next_step}], data_issues, snapshot}`.
+6. **Brief** (`report.py`): `build(client, instance, as_of, top=10, since=None, prompt=None, snapshots=None) -> {instance, date, since, baseline, previous_date, deals [{rank, row, account, changes, next_step}], dropped, data_issues, snapshot}`. `row` is `rows.to_dict(row)`. `changes` is that deal's `per_deal` list (`[]` when nothing changed). `previous_date` and `dropped` come straight from `compare()`. Tasks 8–9 call `build()` with a scratch `snapshots` folder.
 7. **Command line**: `python3 -m brief --instance {suryodaya,keystone} --date YYYY-MM-DD [--top 10] [--since YYYY-MM-DD] [--out briefs/] [--snapshots briefs/snapshots/] [--prompt TEXT]`. It exits with 2 for bad options and 3 when the platform cannot be read (as on seat 31).
 8. **Tasks**: each task file exposes `TASKS = [(task_id, title, fn)]`. `fn(client, ctx) -> {passed, score, evidence}`. `suite.py` collects both files.
 
@@ -106,6 +106,9 @@ From `30-market-research/`:
 ```
 python3 -m unittest discover -s tests -t .
 ```
+
+## Tasks without the brief yet ("component" mode)
+Until `report.build()` exists, a task in `tasks_brief.py` drives its own module directly on live rows, and its score is capped at 0.5. That way a component pass is never counted as a pass of the brief. When `build()` is importable, the same task runs the whole brief, and the cap is lifted.
 
 ## Open questions for the instructor
 1. Is there a seat 30 login, or do we use our seat 31 one? Does it include the knowledgebase tools?

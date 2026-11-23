@@ -20,15 +20,20 @@ def deal(i, **over):
 class FakeClient:
     """list_all() over canned records; `script` lets a test change the data between reads."""
 
-    def __init__(self, deals, pipelines=PIPELINES):
+    def __init__(self, deals, pipelines=PIPELINES, activities=(), notes=(), parties=()):
         self.deals, self.pipelines, self.reads = deals, pipelines, []
+        self.activities, self.notes, self.parties = list(activities), list(notes), list(parties)
         self.on_read = None
 
     def list_all(self, entity, filters=None):
         self.reads.append(entity)
         if self.on_read:
             self.on_read(self, entity)
-        return copy.deepcopy({"Deal": self.deals, "Pipeline": self.pipelines}[entity])
+        return copy.deepcopy({"Deal": self.deals, "Pipeline": self.pipelines, "Activity": self.activities,
+                              "Note": self.notes, "Party": self.parties}[entity])
 
     def call(self, name, args=None):
+        from brief.client import WriteBlocked, is_read_tool
+        if not is_read_tool(name):
+            raise WriteBlocked(f"{name} is not a read tool")   # as the real client does
         raise AssertionError(f"tasks must read through list_all, not {name}")

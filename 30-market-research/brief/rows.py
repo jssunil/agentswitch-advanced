@@ -96,6 +96,8 @@ def from_record(record, labels=None):
     stage_known = stages is not None and stage in stages
     if stage is None:
         issues.append("stage: missing")
+    elif pipeline is None:
+        issues.append("pipeline: missing, so the stage has no label")
     elif not stage_known:
         issues.append("stage: not a stage of the deal's pipeline")
 

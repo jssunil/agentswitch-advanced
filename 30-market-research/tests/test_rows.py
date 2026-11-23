@@ -59,6 +59,7 @@ class FromRecord(unittest.TestCase):
         self.assertFalse(r.stage_known)
         self.assertIn("stage: not a stage of the deal's pipeline", r.issues)
         r = from_record(deal(pipeline=None), self.labels)
+        self.assertEqual(r.issues, ("pipeline: missing, so the stage has no label",))
         self.assertIsNone(r.pipeline)
         self.assertEqual(r.stage, "proposal")
         self.assertFalse(r.stage_known)

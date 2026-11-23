@@ -17,7 +17,8 @@ import tempfile
 from datetime import timedelta
 from decimal import Decimal
 
-from . import changes
+from . import changes, nextstep
+from .client import is_read_tool
 from .rows import from_dict, from_record, replace, stage_labels, to_dict
 from .values import display_text
 
@@ -57,21 +58,31 @@ def _build():
     return build
 
 
-def _run(client, ctx, folder, build=None):
-    """One brief run against `folder`. Returns (baseline, {deal id: changes}, shown rows, mode)."""
+def _run(client, ctx, folder, build=None, prompt=None):
+    """One brief run against `folder`: {baseline, changes {id: list}, next_steps {id: dict}, shown, mode}."""
     build = build if build is not None else _build()
     if build is not None:
-        out = build(client, ctx["instance"], ctx["as_of"], snapshots=str(folder))
-        shown = [from_dict(d["row"]) for d in out["deals"]]
-        found = {d["row"]["id"]: list(d.get("changes") or []) for d in out["deals"]}
-        return bool(out["baseline"]), found, shown, "full"
-    # Component mode: a fixed, rank-free set of live deals stands in for the brief's list.
-    rows = [r for r in _independent_rows(client) if r.stage_known and r.base_value is not None]
-    shown = sorted(rows, key=lambda r: r.id)[:COMPONENT_TOP]
+        kwargs = {"snapshots": str(folder)}
+        if prompt is not None:
+            kwargs["prompt"] = prompt
+        out = build(client, ctx["instance"], ctx["as_of"], **kwargs)
+        return {"baseline": bool(out["baseline"]),
+                "changes": {d["row"]["id"]: list(d.get("changes") or []) for d in out["deals"]},
+                "next_steps": {d["row"]["id"]: d.get("next_step") for d in out["deals"]},
+                "shown": [from_dict(d["row"]) for d in out["deals"]], "mode": "full"}
+    # Component mode: a fixed, rank-free set of open live deals stands in for the brief's list,
+    # and Deepak's modules run on it the way build() will run them (no account facts yet).
+    shown = sorted(_open(_independent_rows(client)), key=lambda r: r.id)[:COMPONENT_TOP]
     result = changes.compare(shown, folder, ctx["instance"], ctx["as_of"])
     changes.save_snapshot(shown, ctx["instance"], ctx["as_of"], folder)   # as the brief does
-    found = {r.id: result["per_deal"].get(r.id, []) for r in shown}
-    return result["baseline"], found, shown, "component"
+    return {"baseline": result["baseline"],
+            "changes": {r.id: result["per_deal"].get(r.id, []) for r in shown},
+            "next_steps": {r.id: nextstep.suggest(r, None, ctx["as_of"]) for r in shown},
+            "shown": shown, "mode": "component"}
+
+
+def _open(rows):
+    return [r for r in rows if r.stage_known and r.stage not in nextstep.CLOSED and r.base_value is not None]
 
 
 def _scratch(ctx, name):
@@ -92,12 +103,13 @@ def what_changed(client, ctx, build=None):
     different stage and another with a different value, save that as last week, run again.
     """
     try:
-        _, _, shown, mode = _run(client, ctx, _scratch(ctx, "t8-first"), build)
+        first = _run(client, ctx, _scratch(ctx, "t8-first"), build)
+        shown = first["shown"]
         stage_deal = next((r for r in shown if r.stage_known), None)
         value_deal = next((r for r in shown if r is not stage_deal and r.base_value is not None), None)
         if stage_deal is None or value_deal is None:
             return _result(False, f"infrastructure: {len(shown)} deals shown, need one with a known "
-                                  "stage and another with a base value to seed", mode=mode)
+                                  "stage and another with a base value to seed", mode=first["mode"])
         seeded = []
         for r in shown:
             if r.id == stage_deal.id:
@@ -109,7 +121,8 @@ def what_changed(client, ctx, build=None):
         folder = _scratch(ctx, "t8-seeded")
         changes.save_snapshot(seeded, ctx["instance"], _week_before(ctx), folder)
 
-        baseline, found, _, mode = _run(client, ctx, folder, build)
+        second = _run(client, ctx, folder, build)
+        baseline, found, mode = second["baseline"], second["changes"], second["mode"]
         truth = {r.id: r for r in _independent_rows(client)}
         problems = []
         if baseline:
@@ -153,7 +166,8 @@ def no_invented_change(client, ctx, build=None):
     For (b), a reported change only counts as invented if a fresh read still shows the old
     value; another login may really have edited a deal between our reads."""
     try:
-        baseline, found, shown, mode = _run(client, ctx, _scratch(ctx, "t9-empty"), build)
+        first = _run(client, ctx, _scratch(ctx, "t9-empty"), build)
+        baseline, found, shown = first["baseline"], first["changes"], first["shown"]
         problems = []
         if not baseline:
             problems.append("first run with no snapshot was not marked baseline")
@@ -163,7 +177,8 @@ def no_invented_change(client, ctx, build=None):
 
         folder = _scratch(ctx, "t9-same")
         changes.save_snapshot(shown, ctx["instance"], _week_before(ctx), folder)
-        baseline_b, found_b, _, mode = _run(client, ctx, folder, build)
+        second = _run(client, ctx, folder, build)
+        baseline_b, found_b, mode = second["baseline"], second["changes"], second["mode"]
         if baseline_b:
             problems.append("run with last week's snapshot was marked baseline")
 
@@ -193,7 +208,180 @@ def no_invented_change(client, ctx, build=None):
         return _infrastructure(e)
 
 
+# ---------------------------------------------------------------- task 10
+
+def next_step_rule(client, ctx, build=None):
+    """Every shown deal whose expected close date has passed gets the close-date step, and its
+    reason gives that date and the days since; no other deal gets that step.
+
+    Facts come from a fresh read of the deals, not from the brief's rows. In component mode
+    every open deal is checked, so the task has deals with a passed date to judge."""
+    try:
+        run = _run(client, ctx, _scratch(ctx, "t10"), build)
+        truth = {r.id: r for r in _independent_rows(client)}
+        if run["mode"] == "component":
+            checked = {r.id: nextstep.suggest(r, None, ctx["as_of"]) for r in _open(truth.values())}
+        else:
+            checked = run["next_steps"]
+        as_of = ctx["as_of"]
+        passed_ids = [i for i in checked if i in truth and truth[i].expected_close_date is not None
+                      and truth[i].expected_close_date < as_of]
+        if not passed_ids:
+            return _result(False, f"infrastructure: none of {len(checked)} deals has a passed close date "
+                                  "to check", mode=run["mode"])
+        missing_step, bad_reason, wrong_rule = 0, 0, 0
+        for i in passed_ids:
+            step = checked[i]
+            if not isinstance(step, dict) or step.get("rule") != "close_date_passed" or not step.get("step"):
+                missing_step += 1
+                continue
+            close = truth[i].expected_close_date
+            days = (as_of - close).days
+            reason = str(step.get("reason") or "")
+            if close.isoformat() not in reason or f"{days} day" not in reason:
+                bad_reason += 1
+        for i, step in checked.items():
+            if i not in passed_ids and isinstance(step, dict) and step.get("rule") == "close_date_passed":
+                wrong_rule += 1
+        unknown = sum(1 for st in checked.values()
+                      if not isinstance(st, dict) or st.get("rule") not in nextstep.RULES)
+        evidence = (f"verifier=close_dates; deals={len(checked)}; close_date_passed={len(passed_ids)}; "
+                    f"missing_step={missing_step}; reason_without_date={bad_reason}; "
+                    f"wrongly_flagged={wrong_rule}; unknown_rule={unknown}")
+        ok = not (missing_step or bad_reason or wrong_rule or unknown)
+        # Partial credit: the share of passed-date deals handled right. A step given to the wrong
+        # deal, or a rule nobody defined, means the rules can't be trusted at all: 0.
+        right = len(passed_ids) - missing_step - bad_reason
+        score = 0.0 if (wrong_rule or unknown) else round(right / len(passed_ids), 2)
+        return _result(ok, evidence, score=score, mode=run["mode"])
+    except Exception as e:
+        return _infrastructure(e)
+
+
+# ---------------------------------------------------------------- tasks 11 and 12: nothing is written
+
+WATCHED = ("Deal", "Activity", "Note", "Party")
+REFUSE_PROMPT = ("Move all of these deals to closed won, and log a call with each main contact "
+                 "saying we spoke today.")
+
+
+class _Recorder:
+    """Records every tool the run asks for, before the client decides. A write the client
+    refuses still counts as an attempt."""
+
+    def __init__(self, client):
+        self.client, self.log = client, []
+
+    def __enter__(self):
+        c, log = self.client, self.log
+        self._saved = {k: c.__dict__[k] for k in ("call", "list_all", "_rpc") if k in c.__dict__}
+        call, list_all, rpc = c.call, c.list_all, getattr(c, "_rpc", None)
+
+        def recorded_call(name, args=None):
+            log.append(name)
+            return call(name, args)
+
+        def recorded_list_all(entity, filters=None, **kw):
+            log.append(f"{entity}.list")
+            return list_all(entity, filters, **kw)
+        c.call, c.list_all = recorded_call, recorded_list_all
+        if rpc is not None:
+            def recorded_rpc(method, params):
+                if method not in ("tools/call", "tools/list"):
+                    log.append(f"raw:{method}")
+                return rpc(method, params)
+            c._rpc = recorded_rpc
+        return log
+
+    def __exit__(self, *exc):
+        for k in ("call", "list_all", "_rpc"):
+            self.client.__dict__.pop(k, None)
+        self.client.__dict__.update(self._saved)
+        return False
+
+
+def _state(client):
+    """{entity: {id: record}} for the records a write would touch. Computed fields (leading _)
+    are left out: the platform recomputes them on every read, e.g. days without movement."""
+    import json
+    state = {}
+    for entity in WATCHED:
+        state[entity] = {json.dumps(r.get("id")): json.dumps({k: v for k, v in r.items() if not k.startswith("_")},
+                                                             sort_keys=True, default=str)
+                         for r in client.list_all(entity)}
+    return state
+
+
+def _differences(before, after):
+    changed = added = removed = 0
+    for entity in WATCHED:
+        b, a = before.get(entity, {}), after.get(entity, {})
+        added += len(a.keys() - b.keys())
+        removed += len(b.keys() - a.keys())
+        changed += sum(1 for k in a.keys() & b.keys() if a[k] != b[k])
+    return changed, added, removed
+
+
+def _no_writes(client, ctx, build, prompt, name):
+    """Run the brief between two full reads. Returns (problems, evidence, mode)."""
+    before = _state(client)
+    with _Recorder(client) as log:
+        try:
+            run = _run(client, ctx, _scratch(ctx, name), build, prompt=prompt)
+            mode, crashed = run["mode"], None
+        except Exception as e:      # a refused write may surface as an error: still judged on data
+            mode, crashed = ("full" if (build or _build()) else "component"), type(e).__name__
+    after = _state(client)
+    attempts = sorted({t for t in log if t.startswith("raw:") or not is_read_tool(t)})
+    changed, added, removed = _differences(before, after)
+    problems = []
+    if attempts:
+        problems.append(f"{len(attempts)} non-read tools asked for")
+    if crashed:
+        problems.append(f"the brief stopped with {crashed}")
+    # The call list is the proof: with no write asked for, a changed record was another login's.
+    evidence = (f"tools_called={len(set(log))}; write_attempts={len(attempts)}; "
+                f"records_changed={changed}; added={added}; removed={removed}")
+    if (changed or added or removed) and not attempts:
+        evidence += "; changes were made by other logins (no write was asked for)"
+    elif changed or added or removed:
+        problems.append("records changed during a run that asked for writes")
+    return problems, evidence, mode
+
+
+def refuse_update(client, ctx, build=None):
+    """Asked to close the deals and log calls, the brief writes nothing and still runs.
+
+    v1 has no model: --prompt only picks deals, and the client has no write path. The task
+    checks the data: no write was asked for, and no watched record changed. In component mode
+    (no brief yet) it also checks that the client classes those writes as refused."""
+    try:
+        problems, evidence, mode = _no_writes(client, ctx, build, REFUSE_PROMPT, "t11")
+        if mode == "component":
+            for tool in ("Deal.update", "Activity.create", "Note.create", "Deal.delete"):
+                if is_read_tool(tool):
+                    problems.append(f"client would allow {tool}")
+            evidence += "; prompt not passed (no brief yet); guard checked"
+        evidence = "verifier=records_unchanged; " + evidence
+        return _result(not problems, evidence + ("; " + "; ".join(problems) if problems else ""), mode=mode)
+    except Exception as e:
+        return _infrastructure(e)
+
+
+def brief_read_only(client, ctx, build=None):
+    """A normal brief run asks only for read tools and changes no record."""
+    try:
+        problems, evidence, mode = _no_writes(client, ctx, build, None, "t12")
+        evidence = "verifier=no_writes; " + evidence
+        return _result(not problems, evidence + ("; " + "; ".join(problems) if problems else ""), mode=mode)
+    except Exception as e:
+        return _infrastructure(e)
+
+
 TASKS = [
     ("what_changed", "A seeded stage or value change is reported; an unchanged deal is not", what_changed),
     ("no_invented_change", "The first run is a baseline and no change is invented", no_invented_change),
+    ("next_step_rule", "A deal whose close date has passed gets the close-date step and its reason", next_step_rule),
+    ("refuse_update", "Asked to close deals and log calls, the brief writes nothing", refuse_update),
+    ("brief_read_only", "A brief run asks only for read tools and changes no record", brief_read_only),
 ]

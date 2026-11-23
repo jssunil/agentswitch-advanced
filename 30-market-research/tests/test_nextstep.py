@@ -1,0 +1,104 @@
+"""nextstep.py: the first matching rule wins, and every step carries its reason."""
+import unittest
+from datetime import date
+
+from brief import nextstep
+from brief.rows import from_record, stage_labels
+
+from tests.fakes import PIPELINES, deal
+
+LABELS = stage_labels(PIPELINES)
+TODAY = date(2026, 11, 23)
+RECENT = {"last_contact": {"date": "2026-11-20", "type": "call", "subject": "x"}, "open_activities": []}
+
+
+def row(**over):
+    return from_record(deal(1, **over), LABELS)
+
+
+class Rules(unittest.TestCase):
+    def rule(self, r, facts=RECENT):
+        return nextstep.suggest(r, facts, TODAY)
+
+    def test_close_date_passed_comes_first_with_date_and_days(self):
+        out = self.rule(row(expected_close_date="2026-10-31", probability=0.0), {"last_contact": None})
+        self.assertEqual(out["rule"], "close_date_passed")
+        self.assertIn("2026-10-31", out["reason"])
+        self.assertIn("23 days", out["reason"])
+        self.assertIn("Proposal", out["reason"])
+
+    def test_close_date_today_has_not_passed(self):
+        self.assertNotEqual(self.rule(row(expected_close_date="2026-11-23"))["rule"], "close_date_passed")
+
+    def test_one_day_is_singular(self):
+        self.assertIn("1 day ago", self.rule(row(expected_close_date="2026-11-22"))["reason"])
+
+    def test_oldest_overdue_activity(self):
+        facts = {**RECENT, "open_activities": [
+            {"id": "a2", "subject": "Send revised quote", "due_date": "2026-11-20"},
+            {"id": "a1", "subject": "Site\x1b visit\nplan", "due_date": "2026-11-10"},
+            {"id": "a3", "subject": "Later", "due_date": "2026-12-01"},
+            {"id": "a4", "subject": "No date", "due_date": None}, "junk"]}
+        out = self.rule(row(), facts)
+        self.assertEqual(out["rule"], "overdue_activity")
+        self.assertEqual(out["step"], 'Complete the overdue activity "Site visit plan"')
+        self.assertIn("2026-11-10, 13 days overdue", out["reason"])
+
+    def test_long_subject_is_cut(self):
+        facts = {**RECENT, "open_activities": [{"id": "a", "subject": "x" * 200, "due_date": "2026-11-01"}]}
+        self.assertLessEqual(len(self.rule(row(), facts)["step"]), 120)
+
+    def test_no_contact_recorded(self):
+        out = self.rule(row(), {"last_contact": None, "open_activities": []})
+        self.assertEqual((out["rule"], out["reason"]), ("no_recent_contact", "No contact recorded for this deal or its account"))
+
+    def test_old_contact_and_boundary(self):
+        old = {"last_contact": {"date": "2026-10-24"}, "open_activities": []}     # 30 days
+        self.assertEqual(self.rule(row(), old)["rule"], "no_recent_contact")
+        fresh = {"last_contact": {"date": "2026-10-25"}, "open_activities": []}   # 29 days
+        self.assertNotEqual(self.rule(row(), fresh)["rule"], "no_recent_contact")
+
+    def test_missing_facts_are_not_guessed(self):
+        # No facts at all (component mode): the contact rule cannot match.
+        self.assertNotEqual(nextstep.suggest(row(), None, TODAY)["rule"], "no_recent_contact")
+        unreadable = {"last_contact": {"date": "yesterday"}, "open_activities": []}
+        self.assertNotEqual(self.rule(row(), unreadable)["rule"], "no_recent_contact")
+
+    def test_fix_record(self):
+        out = self.rule(row(expected_close_date=None, probability=0.0))
+        self.assertEqual(out["rule"], "fix_record")
+        self.assertEqual(out["reason"], "No expected close date; probability is 0")
+        self.assertEqual(self.rule(row(value="NaN"))["rule"], "fix_record")
+        self.assertNotEqual(self.rule(row(probability=None))["rule"], "fix_record")
+
+    def test_proposal_waiting_and_boundary(self):
+        self.assertEqual(self.rule(row(_rot_days=14))["rule"], "proposal_waiting")
+        self.assertEqual(self.rule(row(_rot_days=13))["rule"], "keep_moving")
+        self.assertEqual(self.rule(row(_rot_days=None))["rule"], "keep_moving")
+
+    def test_negotiation_and_default(self):
+        self.assertEqual(self.rule(row(stage="negotiation"))["rule"], "negotiation")
+        out = self.rule(row(stage="new"))
+        self.assertEqual(out["rule"], "keep_moving")
+        self.assertIn("2026-12-15", out["reason"])
+
+    def test_closed_deal_gets_no_action(self):
+        self.assertEqual(self.rule(row(stage="closed_won"))["rule"], "not_open")
+
+    def test_every_answer_has_the_three_keys_and_a_known_rule(self):
+        for over in ({}, {"stage": "negotiation"}, {"expected_close_date": None}, {"stage": "bogus"},
+                     {"expected_close_date": "2020-01-01"}, {"value": None, "_base_value": None}):
+            for facts in (None, {}, RECENT, {"last_contact": None}):
+                out = nextstep.suggest(row(**over), facts, TODAY)
+                self.assertEqual(set(out), {"rule", "step", "reason"})
+                self.assertIn(out["rule"], nextstep.RULES + ("not_open",))
+                self.assertTrue(out["step"] and out["reason"])
+
+    def test_date_as_text_and_bad_date(self):
+        self.assertEqual(nextstep.suggest(row(), RECENT, "2026-11-23"), nextstep.suggest(row(), RECENT, TODAY))
+        with self.assertRaises(ValueError):
+            nextstep.suggest(row(), RECENT, None)
+
+
+if __name__ == "__main__":
+    unittest.main()

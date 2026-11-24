@@ -4,6 +4,7 @@ import unittest
 from datetime import date
 from decimal import Decimal
 
+from brief import rows
 from brief.rows import FIELDS, DealRow, from_dict, from_record, replace, stage_labels, to_dict
 
 PIPELINES = [
@@ -63,6 +64,30 @@ class FromRecord(unittest.TestCase):
         self.assertIsNone(r.pipeline)
         self.assertEqual(r.stage, "proposal")
         self.assertFalse(r.stage_known)
+
+    def test_pipeline_that_does_not_exist_is_not_an_unknown_stage(self):
+        # seen on Suryodaya: deals naming a pipeline "default" that no company has
+        r = from_record(deal(pipeline="default", stage="new"), self.labels)
+        self.assertEqual(r.issues, ("pipeline: not found, so the stage has no label",))
+        self.assertEqual((r.pipeline, r.stage, r.stage_known, r.stage_label), ("default", "new", False, None))
+
+    def test_stage_usable(self):
+        usable = {
+            "known stage": deal(),
+            "no pipeline": deal(pipeline=None),
+            "pipeline not found": deal(pipeline="default", stage="new"),
+            "closed, pipeline not found": deal(pipeline="default", stage="closed_won"),
+        }
+        not_usable = {
+            "stage not in its pipeline": deal(stage="bogus_stage"),
+            "ambiguous pipeline key": deal(company_id="c9"),
+            "no stage": deal(stage=None),
+            "no stage, no pipeline": deal(stage=None, pipeline=None),
+        }
+        for name, record in usable.items():
+            self.assertTrue(rows.stage_usable(from_record(record, self.labels)), name)
+        for name, record in not_usable.items():
+            self.assertFalse(rows.stage_usable(from_record(record, self.labels)), name)
 
     def test_bad_values_become_none_with_a_reason(self):
         r = from_record(deal(value="NaN", _base_value=float("inf"), probability=True,

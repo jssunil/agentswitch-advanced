@@ -65,6 +65,11 @@ def stage_labels(pipelines):
     return labels
 
 
+PIPELINE_MISSING = "pipeline: missing, so the stage has no label"
+PIPELINE_NOT_FOUND = "pipeline: not found, so the stage has no label"
+STAGE_NOT_IN_PIPELINE = "stage: not a stage of the deal's pipeline"
+
+
 def _stages_for(labels, company_id, pipeline):
     """The deal's own company first; otherwise a pipeline key that only one company uses."""
     if pipeline is None:
@@ -73,6 +78,21 @@ def _stages_for(labels, company_id, pipeline):
         return labels[(company_id, pipeline)]
     matches = [v for (_, key), v in labels.items() if key == pipeline]
     return matches[0] if len(matches) == 1 else None
+
+
+def _pipeline_exists(labels, pipeline):
+    """True if any company has a pipeline with this key (even one we can't pick between)."""
+    return any(key == pipeline for (_, key) in labels)
+
+
+def stage_usable(row):
+    """True when the deal's stage can be used to judge it open or closed: a stage of its own
+    pipeline, or, for a deal with no usable pipeline (none, or one that doesn't exist), its stage
+    key. False for a missing stage and for a stage that isn't in a pipeline that does exist
+    (the unknown-stage data issue, task 3). Shared by deals.py, the tasks and the snapshot run."""
+    if row.stage is None:
+        return False
+    return row.stage_known or PIPELINE_MISSING in row.issues or PIPELINE_NOT_FOUND in row.issues
 
 
 def from_record(record, labels=None):
@@ -92,14 +112,19 @@ def from_record(record, labels=None):
     company_id = _text(record.get("company_id"))
     pipeline = _text(record.get("pipeline"))
     stage = _text(record.get("stage"))
-    stages = _stages_for(labels or {}, company_id, pipeline)
+    labels = labels or {}
+    stages = _stages_for(labels, company_id, pipeline)
     stage_known = stages is not None and stage in stages
     if stage is None:
         issues.append("stage: missing")
     elif pipeline is None:
-        issues.append("pipeline: missing, so the stage has no label")
+        issues.append(PIPELINE_MISSING)
+    elif stages is None and not _pipeline_exists(labels, pipeline):
+        # The deal names a pipeline no company has (seen on Suryodaya: "default"). Like a deal
+        # with no pipeline, it is judged by its stage key; see stage_usable() and OBS-30-001.
+        issues.append(PIPELINE_NOT_FOUND)
     elif not stage_known:
-        issues.append("stage: not a stage of the deal's pipeline")
+        issues.append(STAGE_NOT_IN_PIPELINE)
 
     currency = _currency(record.get("currency"), issues, "currency")
     base_currency = _currency(record.get("_base_currency"), issues, "base_currency")
@@ -161,7 +186,8 @@ def from_dict(data):
     return DealRow(**values)
 
 
-__all__ = ["DealRow", "FIELDS", "stage_labels", "from_record", "to_dict", "from_dict", "replace"]
+__all__ = ["DealRow", "FIELDS", "stage_labels", "from_record", "to_dict", "from_dict", "replace",
+           "stage_usable", "PIPELINE_MISSING", "PIPELINE_NOT_FOUND", "STAGE_NOT_IN_PIPELINE"]
 
 
 def _text(v):

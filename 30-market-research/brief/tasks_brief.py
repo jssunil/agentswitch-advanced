@@ -19,7 +19,7 @@ from decimal import Decimal
 
 from . import changes, nextstep, optional_module
 from .client import is_read_tool
-from .rows import from_dict, from_record, replace, stage_labels, to_dict
+from .rows import from_dict, from_record, replace, stage_labels, stage_usable, to_dict
 from .values import display_text
 
 SEEDED_STAGE = "seat30_seeded_stage"
@@ -81,7 +81,7 @@ def _run(client, ctx, folder, build=None, prompt=None):
 
 
 def _open(rows):
-    return [r for r in rows if r.stage_known and r.stage not in nextstep.CLOSED and r.base_value is not None]
+    return [r for r in rows if stage_usable(r) and r.stage not in nextstep.CLOSED and r.base_value is not None]
 
 
 def _scratch(ctx, name):

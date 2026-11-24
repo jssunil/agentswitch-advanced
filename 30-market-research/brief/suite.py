@@ -128,8 +128,11 @@ def main(argv=None):
     client, platform_error = None, None
     try:
         client = Client()
+        # Bug hunt BH-02 (24 Nov): Client() only checks the settings. One read first, so a platform
+        # that is down or a rejected token gives exit 3, not twelve task failures and exit 0.
+        client.tool_names()
     except McpError as e:
-        platform_error = display_text(e)
+        client, platform_error = None, display_text(e)
     out = run_suite(client, args.instance, args.date or today_ist(), args.only, platform_error)
     if args.out:
         write_results(args.out, out)

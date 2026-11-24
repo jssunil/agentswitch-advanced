@@ -246,6 +246,24 @@ class Suite(unittest.TestCase):
         self.assertEqual(len(payload["tasks"]), 12)
         self.assertEqual(payload["summary"], "keystone: 0/12 tasks passed")
 
+    def test_main_exits_3_when_the_platform_is_down_or_the_token_is_rejected(self):
+        # Bug hunt BH-02: the settings were fine, so the platform was never asked before the tasks ran.
+        from brief.client import McpError, PlatformUnavailable
+        for error in (PlatformUnavailable("tools/list: could not connect after 4 tries"),
+                      McpError("tools/list: HTTP 401, the token was rejected (check AGENTSWITCH_TOKEN)")):
+            class Down(suite.Client):
+                def _rpc(self, method, params):
+                    raise error
+            env = {"AGENTSWITCH_BASE_URL": "https://example.invalid", "AGENTSWITCH_TOKEN": "t"}
+            with tempfile.TemporaryDirectory() as d, mock.patch.dict("os.environ", env, clear=True), \
+                    mock.patch.object(suite, "Client", Down), redirect_stdout(io.StringIO()):
+                code = suite.main(["--instance", "keystone", "--date", "2026-11-30", "--out", f"{d}/results.json"])
+                payload = json.loads(Path(d, "results.json").read_text())
+            self.assertEqual(code, 3, error)
+            self.assertEqual(len(payload["tasks"]), 12)
+            self.assertTrue(all(r["evidence"].startswith("infrastructure: the platform could not be reached")
+                                for r in payload["tasks"]))
+
     def test_unknown_task_id_is_a_usage_error(self):
         with self.assertRaises(SystemExit) as e, mock.patch("sys.stderr", io.StringIO()):
             suite.main(["--instance", "keystone", "--only", "nope"])

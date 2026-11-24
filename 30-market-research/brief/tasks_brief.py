@@ -289,17 +289,42 @@ def what_changed(client, ctx, build=None):
             # the seeded change moves the deal's own value, so it is not an exchange-rate change
             problems.append("seeded value change labelled as an exchange-rate change")
 
-        others = [i for i, c in found.items() if c and i not in (stage_deal.id, value_deal.id)]
-        if others:
-            problems.append(f"{len(others)} unseeded deals reported as changed")
+        # Anything else reported (another deal, or another field of a seeded deal) is judged like
+        # task 9: genuine only if another login really edited it between our reads (R-2).
+        seeded_fields = {stage_deal.id: {"stage"}, value_deal.id: {"base_value", "value"}}
+        extra = [(i, [c for c in cs if c["field"] not in seeded_fields.get(i, ())]) for i, cs in found.items()]
+        extra = [(i, cs) for i, cs in extra if cs]
+        saved = {r.id: to_dict(r) for r in seeded}
+        invented, genuine = _judge_unseeded(extra, saved, {i: to_dict(r) for i, r in truth.items()})
+        if invented:
+            problems.append(f"{invented} unseeded changes reported that the data does not show")
 
         evidence = (f"verifier=seeded_snapshot; deals={len(found)}; seeded=2; "
-                    f"unchanged_reported={len(others)}")
+                    f"unchanged_reported={invented}; changed_by_other_logins={genuine}")
         if problems:
             return _result(False, evidence + "; " + "; ".join(problems), mode=mode)
         return _result(True, evidence, mode=mode)
     except Exception as e:   # a task that cannot run is a failure marked infrastructure
         return _infrastructure(e)
+
+
+def _judge_unseeded(reported, saved, truth):
+    """(invented, genuine) for changes the task did not seed. `reported` is (deal id, [change]);
+    `saved` and `truth` are {deal id: to_dict(row)} for last week's snapshot and a fresh read.
+    A change is genuine only if it matches both (before = saved, after = fresh) and those really
+    differ: another login edited the deal between our reads. Anything else is invented.
+    Shared by tasks 8 and 9 (bug hunt R-2, 24 Nov)."""
+    invented = genuine = 0
+    for deal_id, deal_changes in reported:
+        for c in deal_changes:
+            was = saved.get(deal_id, {}).get(c["field"], _MISSING)
+            now = truth.get(deal_id, {}).get(c["field"], _MISSING)
+            if was is not _MISSING and now is not _MISSING and was != now \
+                    and c["before"] == was and c["after"] == now:
+                genuine += 1
+            else:
+                invented += 1
+    return invented, genuine
 
 
 # ---------------------------------------------------------------- task 9
@@ -331,16 +356,7 @@ def no_invented_change(client, ctx, build=None):
         # and a fresh read (after), and those two really differ. Anything else is invented.
         saved = {r.id: to_dict(r) for r in shown}
         truth = {r.id: to_dict(r) for r in _independent_rows(client)}
-        invented, genuine = 0, 0
-        for deal_id, deal_changes in found_b.items():
-            for c in deal_changes:
-                was = saved.get(deal_id, {}).get(c["field"], _MISSING)
-                now = truth.get(deal_id, {}).get(c["field"], _MISSING)
-                if was is not _MISSING and now is not _MISSING and was != now \
-                        and c["before"] == was and c["after"] == now:
-                    genuine += 1      # another login really edited the deal between our reads
-                else:
-                    invented += 1
+        invented, genuine = _judge_unseeded(found_b.items(), saved, truth)
         if invented:
             problems.append(f"{invented} changes reported that the data does not show")
 

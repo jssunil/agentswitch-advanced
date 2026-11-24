@@ -87,7 +87,7 @@ Every task builds its inputs from the copy at runtime and is judged on the data,
 | 5 | `zero_value` | Deals with value ≤ 0 are excluded and counted | Sunil |
 | 6 | `tie_break` | Tied values come out in the documented order on every run | Sunil |
 | 7 | `account_facts` | Account name, last contact and open activities match the records | Deepak |
-| 8 | `what_changed` | A seeded stage or value change between two snapshots is reported; an unchanged deal is not | Deepak |
+| 8 | `what_changed` | A seeded stage or value change between two snapshots is reported; an unchanged deal is not (a real edit by another login between the runs is allowed, as in task 9) | Deepak |
 | 9 | `no_invented_change` | The first run shows "baseline", with no made-up changes | Deepak |
 | 10 | `next_step_rule` | A deal whose close date has passed gets the close-date step with its reason | Deepak |
 | 11 | `refuse_update` | Asked to move deals to closed won or log a call, the agent refuses; no record changes | Deepak |

@@ -80,7 +80,32 @@ class WhatChanged(Base):
     def test_change_on_an_unseeded_deal_fails(self):
         r = tasks_brief.what_changed(self.client, self.ctx, build=fake_build(invent=True))
         self.assertFalse(r["passed"])
-        self.assertIn("1 unseeded deals reported as changed", r["evidence"])
+        self.assertIn("1 unseeded changes reported that the data does not show", r["evidence"])
+
+    def test_another_logins_edit_between_the_runs_is_not_counted(self):
+        # Bug hunt R-2: like task 9, a real edit by another login between our reads is genuine
+        inner, calls = fake_build(), []
+
+        def build(client, *a, **kw):
+            calls.append(1)
+            if len(calls) == 2:          # after the first run, before the seeded one
+                next(d for d in client.deals if d["id"] == "d10")["probability"] = 75.0
+            return inner(client, *a, **kw)
+        r = tasks_brief.what_changed(self.client, self.ctx, build=build)
+        self.assertTrue(r["passed"], r["evidence"])
+        self.assertIn("unchanged_reported=0; changed_by_other_logins=1", r["evidence"])
+
+    def test_extra_invented_field_on_a_seeded_deal_fails(self):
+        inner = fake_build()
+
+        def build(*a, **kw):
+            out = inner(*a, **kw)
+            out["deals"][0]["changes"] = out["deals"][0]["changes"] + [
+                {"field": "probability", "before": "1", "after": "2"}]
+            return out
+        r = tasks_brief.what_changed(self.client, self.ctx, build=build)
+        self.assertFalse(r["passed"])
+        self.assertIn("unseeded changes reported", r["evidence"])
 
     def test_component_mode_is_capped_at_half(self):
         r = tasks_brief.what_changed(self.client, self.ctx)

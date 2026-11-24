@@ -10,12 +10,20 @@ Rules, in order (RULES below is the list the tests and PLAN.md refer to):
   3 no_recent_contact   no contact recorded, or the last one is 30 or more days old
   4 fix_record          no close date, a probability of 0, a probability of 100 on a deal that is
                         still open, or a value the brief could not read
-  5 proposal_waiting    in the proposal stage with no movement for 14 or more days
+  5 proposal_waiting    in the proposal stage with no movement for 14 or more days. ON HOLD
+                        (PROPOSAL_WAITING_ON): the platform's counter may track the deal's age,
+                        not its time in the stage (instructor question 15). While on hold the
+                        deal falls through to the next rule, so the brief makes no claim about
+                        how long it has been in the stage.
   6 negotiation         in the negotiation stage
   7 keep_moving         none of the above
 
 `facts` is accounts.facts() for the deal (Sunil). It may be None or partial: a rule that
 needs a missing fact does not match, and nothing is guessed.
+
+Returns {rule, step, reason}; rule 2 also returns `activity` {id, subject, due_date}. The step
+and the reason are always our own fixed wording. Record text (the activity's subject) never goes
+inside them: report.py shows it separately, quoted and escaped, as CRM text.
 """
 from datetime import date
 
@@ -26,7 +34,9 @@ RULES = ("close_date_passed", "overdue_activity", "no_recent_contact", "fix_reco
 CLOSED = ("closed_won", "closed_lost")
 NO_CONTACT_DAYS = 30
 PROPOSAL_WAIT_DAYS = 14
+PROPOSAL_WAITING_ON = False   # rule 5 on hold until the instructor says what resets the counter
 SUBJECT_MAX = 80
+OVERDUE_STEP = "Complete the overdue activity"
 
 
 def suggest(row, facts, as_of):
@@ -46,9 +56,10 @@ def suggest(row, facts, as_of):
 
     overdue = _overdue_activity(facts.get("open_activities"), as_of)
     if overdue is not None:
-        subject, due = overdue
-        return _out("overdue_activity", f'Complete the overdue activity "{subject}"',
-                    f"Due {due.isoformat()}, {_days((as_of - due).days)} overdue")
+        activity_id, subject, due = overdue
+        out = _out("overdue_activity", OVERDUE_STEP, f"Due {due.isoformat()}, {_days((as_of - due).days)} overdue")
+        out["activity"] = {"id": activity_id, "subject": subject, "due_date": due.isoformat()}
+        return out
 
     if "last_contact" in facts:
         last = facts.get("last_contact")
@@ -75,7 +86,8 @@ def suggest(row, facts, as_of):
     if missing:
         return _out("fix_record", "Ask the deal owner to update the deal record", "; ".join(missing).capitalize())
 
-    if row.stage == "proposal" and row.rot_days is not None and row.rot_days >= PROPOSAL_WAIT_DAYS:
+    if PROPOSAL_WAITING_ON and row.stage == "proposal" and row.rot_days is not None \
+            and row.rot_days >= PROPOSAL_WAIT_DAYS:
         return _out("proposal_waiting", "Follow up on the proposal with the main contact",
                     f"In {stage} with no movement for {_days(row.rot_days)}")
 
@@ -88,7 +100,8 @@ def suggest(row, facts, as_of):
 
 
 def _overdue_activity(activities, as_of):
-    """(subject, due date) of the oldest overdue open activity, or None."""
+    """(id, subject, due date) of the oldest overdue open activity, or None. The subject is
+    record text: control and invisible characters removed, one line, at most SUBJECT_MAX."""
     oldest = None
     for a in activities or ():
         if not isinstance(a, dict):
@@ -101,7 +114,7 @@ def _overdue_activity(activities, as_of):
         key = (due, str(a.get("id")))
         if oldest is None or key < oldest[0]:
             oldest = (key, subject, due)
-    return None if oldest is None else (oldest[1], oldest[2])
+    return None if oldest is None else (oldest[0][1], oldest[1], oldest[2])
 
 
 def _out(rule, step, reason):

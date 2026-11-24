@@ -30,7 +30,10 @@ class ReadOnly(unittest.TestCase):
     def test_writes_are_refused_before_sending(self):
         c = Recording()
         for name in ("Deal.update", "Deal.create", "Deal.delete", "Activity.create", "Note.create",
-                     "Deal.list_and_update", "endpoint.make.thread", "email.send", "Deal.listx"):
+                     "Deal.list_and_update", "endpoint.make.thread", "email.send", "Deal.listx",
+                     # write tools the seat 30 login advertises (review, 24 Nov)
+                     "Party.create", "Party.update", "PartyRelationship.create", "PartyRelationship.update",
+                     "KBNote.create", "KBNote.update", "KBTag.update", "KBVault.create"):
             with self.assertRaises(WriteBlocked, msg=name):
                 c.call(name, {"id": "d1"})
         self.assertEqual(c.sent, [])

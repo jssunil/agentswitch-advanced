@@ -20,9 +20,10 @@ def deal(i, **over):
 class FakeClient:
     """list_all() over canned records; `script` lets a test change the data between reads."""
 
-    def __init__(self, deals, pipelines=PIPELINES, activities=(), notes=(), parties=()):
+    def __init__(self, deals, pipelines=PIPELINES, activities=(), notes=(), parties=(), kbnotes=()):
         self.deals, self.pipelines, self.reads = deals, pipelines, []
         self.activities, self.notes, self.parties = list(activities), list(notes), list(parties)
+        self.kbnotes = list(kbnotes)
         self.on_read = None
 
     def list_all(self, entity, filters=None):
@@ -30,7 +31,7 @@ class FakeClient:
         if self.on_read:
             self.on_read(self, entity)
         return copy.deepcopy({"Deal": self.deals, "Pipeline": self.pipelines, "Activity": self.activities,
-                              "Note": self.notes, "Party": self.parties}[entity])
+                              "Note": self.notes, "Party": self.parties, "KBNote": self.kbnotes}[entity])
 
     def call(self, name, args=None):
         from brief.client import WriteBlocked, is_read_tool

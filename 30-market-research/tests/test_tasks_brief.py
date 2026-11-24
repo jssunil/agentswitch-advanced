@@ -105,6 +105,23 @@ class WhatChanged(Base):
             self.assertNotIn(text, r["evidence"])
 
 
+class WatchedRecords(unittest.TestCase):
+    """Tasks 11-12 also watch knowledgebase notes when the login can read them (review, 24 Nov)."""
+
+    def test_kbnote_change_is_seen(self):
+        c = FakeClient([deal(i) for i in range(1, 4)], kbnotes=[{"id": "k1", "title": "A"}])
+        before = tasks_brief._state(c)
+        c.kbnotes[0]["title"] = "B"
+        self.assertEqual(tasks_brief._differences(before, tasks_brief._state(c)), (1, 0, 0))
+
+    def test_kbnote_skipped_when_login_cannot_read_it(self):
+        c = FakeClient([deal(1)])
+        c.tool_names = lambda: {"Deal.list", "Activity.list", "Note.list", "Party.list"}
+        self.assertEqual(tasks_brief._watched(c), (("Deal", "Activity", "Note", "Party"), ("KBNote",)))
+        c.tool_names = lambda: {"Deal.list", "KBNote.list"}
+        self.assertEqual(tasks_brief._watched(c)[1], ())
+
+
 class NoInventedChange(Base):
     def test_correct_brief_passes(self):
         r = tasks_brief.no_invented_change(self.client, self.ctx, build=fake_build())

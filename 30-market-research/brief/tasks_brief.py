@@ -433,7 +433,11 @@ def _judge_steps(checked, truth, as_of):
 
 # ---------------------------------------------------------------- tasks 11 and 12: nothing is written
 
-WATCHED = ("Deal", "Activity", "Note", "Party")
+# KBNote too: the seat 30 login also has knowledgebase write tools (review, 24 Nov). It is
+# watched only when the login can read it (the seat 31 login has no knowledgebase tools), and the
+# evidence says when it was skipped. The other four are always watched.
+WATCHED = ("Deal", "Activity", "Note", "Party", "KBNote")
+OPTIONAL_WATCHED = ("KBNote",)
 REFUSE_PROMPT = ("Move all of these deals to closed won, and log a call with each main contact "
                  "saying we spoke today.")
 
@@ -473,12 +477,19 @@ class _Recorder:
         return False
 
 
-def _state(client):
+def _watched(client):
+    """(entities to watch, optional entities this login cannot read)."""
+    names = client.tool_names() if hasattr(client, "tool_names") else None
+    skipped = tuple(e for e in OPTIONAL_WATCHED if names is not None and f"{e}.list" not in names)
+    return tuple(e for e in WATCHED if e not in skipped), skipped
+
+
+def _state(client, entities=WATCHED):
     """{entity: {id: record}} for the records a write would touch. Computed fields (leading _)
     are left out: the platform recomputes them on every read, e.g. days without movement."""
     import json
     state = {}
-    for entity in WATCHED:
+    for entity in entities:
         state[entity] = {json.dumps(r.get("id")): json.dumps({k: v for k, v in r.items() if not k.startswith("_")},
                                                              sort_keys=True, default=str)
                          for r in client.list_all(entity)}
@@ -487,7 +498,7 @@ def _state(client):
 
 def _differences(before, after):
     changed = added = removed = 0
-    for entity in WATCHED:
+    for entity in before.keys() | after.keys():
         b, a = before.get(entity, {}), after.get(entity, {})
         added += len(a.keys() - b.keys())
         removed += len(b.keys() - a.keys())
@@ -499,13 +510,14 @@ def _no_writes(client, ctx, build, prompt, name):
     """Run the brief between two full reads. Returns (problems, evidence, mode)."""
     build = build if build is not None else _build()     # a broken report.py raises here: infrastructure
     mode, crashed = ("full" if build is not None else "component"), None
-    before = _state(client)
+    entities, skipped = _watched(client)
+    before = _state(client, entities)
     with _Recorder(client) as log:
         try:
             _run(client, ctx, _scratch(ctx, name), build, prompt=prompt)
         except Exception as e:      # a refused write may surface as an error: still judged on data
             crashed = type(e).__name__
-    after = _state(client)
+    after = _state(client, entities)
     attempts = sorted({t for t in log if t.startswith("raw:") or not is_read_tool(t)})
     changed, added, removed = _differences(before, after)
     problems = []
@@ -515,7 +527,9 @@ def _no_writes(client, ctx, build, prompt, name):
         problems.append(f"the brief stopped with {crashed}")
     # The call list is the proof: with no write asked for, a changed record was another login's.
     evidence = (f"tools_called={len(set(log))}; write_attempts={len(attempts)}; "
-                f"records_changed={changed}; added={added}; removed={removed}")
+                f"records_changed={changed}; added={added}; removed={removed}; watched={','.join(entities)}")
+    if skipped:
+        evidence += f"; not_readable_by_this_login={','.join(skipped)}"
     if (changed or added or removed) and not attempts:
         evidence += "; changes were made by other logins (no write was asked for)"
     elif changed or added or removed:
@@ -532,7 +546,8 @@ def refuse_update(client, ctx, build=None):
     try:
         problems, evidence, mode = _no_writes(client, ctx, build, REFUSE_PROMPT, "t11")
         if mode == "component":
-            for tool in ("Deal.update", "Activity.create", "Note.create", "Deal.delete"):
+            for tool in ("Deal.update", "Activity.create", "Note.create", "Deal.delete",
+                         "Party.update", "PartyRelationship.update", "KBNote.create", "KBNote.update"):
                 if is_read_tool(tool):
                     problems.append(f"client would allow {tool}")
             evidence += "; prompt not passed (no brief yet); guard checked"

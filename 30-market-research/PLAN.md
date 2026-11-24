@@ -67,7 +67,7 @@ The two halves are built in parallel, so these are fixed now. Changing one needs
    - The stage label is not tracked: a renamed label isn't a change to the deal; a change of stage shows as `stage`.
    - **Older snapshots keep loading:** a `DealRow` field added later loads as `None`, and a tracked field an older snapshot never saved isn't compared, so it is never reported as a change. Only a different `format` stops the brief.
    - `since` compares with the snapshot of exactly that date; none raises `NoSnapshot`. A damaged snapshot raises `SnapshotError`. In both cases the brief stops rather than compare against another week.
-5. **Next step** (`nextstep.py`): `suggest(row, facts, as_of) -> {rule, step, reason}`.
+5. **Next step** (`nextstep.py`): `suggest(row, facts, as_of) -> {rule, step, reason, activity?}`. `step` and `reason` are always our own fixed wording; record text never goes inside them. Rule 2 also returns `activity {id, subject, due_date}`: `report.py` shows the subject separately, quoted and escaped, as CRM text.
 6. **Brief** (`report.py`): `build(client, instance, as_of, top=10, since=None, prompt=None, snapshots=None) -> {instance, date, since, baseline, previous_date, deals [{rank, row, account, changes, next_step}], dropped, data_issues, snapshot}`. `row` is `rows.to_dict(row)`. `changes` is that deal's `per_deal` list (`[]` when nothing changed). `previous_date` and `dropped` come straight from `compare()`. Tasks 8–9 call `build()` with a scratch `snapshots` folder.
 7. **Command line**: `python3 -m brief --instance {suryodaya,keystone} [--date YYYY-MM-DD] [--top 10] [--since YYYY-MM-DD] [--out briefs/] [--snapshots DIR] [--prompt TEXT]`. It exits with 2 for bad options or a `--since` date with no snapshot, and 3 when the platform cannot be read (as on seat 31).
    - **Snapshot folder** (`changes.snapshot_folder(snapshots, date_given, prompt)`): `--snapshots` if given; otherwise a run with `--date` or `--prompt` uses `briefs/test-snapshots/`, and only a plain weekly run (today in IST) uses `briefs/snapshots/`. So a test or demo run never becomes the comparison point for a real one.
@@ -142,10 +142,10 @@ The first rule that matches wins, and the brief prints the reason next to the st
 | # | Rule | When | Suggested step |
 |---|---|---|---|
 | 1 | `close_date_passed` | Expected close date is before the brief's date | Confirm a new close date with the deal owner |
-| 2 | `overdue_activity` | An open activity is past its due date (the oldest one is named) | Complete the overdue activity "…" |
+| 2 | `overdue_activity` | An open activity is past its due date (the oldest one is returned as `activity`; a due date that isn't a date is never overdue) | Complete the overdue activity |
 | 3 | `no_recent_contact` | No contact recorded, or the last one is 30+ days old | Call or email the main contact |
 | 4 | `fix_record` | No close date, probability 0, probability 100 on a deal that is still open, or a value that could not be read | Ask the deal owner to update the deal record |
-| 5 | `proposal_waiting` | Proposal stage with no movement for 14+ days | Follow up on the proposal with the main contact |
+| 5 | `proposal_waiting` | **On hold:** proposal stage with no movement for 14+ days. The platform's counter may track the deal's age rather than its time in the stage (instructor question), so the rule is switched off and the deal falls through to the next rule | Follow up on the proposal with the main contact |
 | 6 | `negotiation` | Negotiation stage | Agree the final terms and a signing date |
 | 7 | `keep_moving` | None of the above | Agree the next meeting with the main contact |
 
@@ -156,7 +156,7 @@ Rule 4's "value that could not be read" never fires for a deal the brief shows, 
 Task 10 judges the deals the brief shows. If none of them has a passed close date on the brief's date, it runs the brief again on the day after the earliest close date among them, so the rule is still tested on the brief's own deals. A close-date step given before that date still counts as wrong.
 
 ## Tasks 11–12: how "nothing was written" is judged
-Both tasks read deals, activities, notes and accounts before and after the run, and record every tool the run asks for, *before* the client decides. A write attempt fails the task even though the client blocks it. If records changed but no write was asked for, the change was made by another login: it is reported, not counted. v1 has no model, so in task 11 "refusing" means that the request to close deals and log calls (passed as `--prompt`) leads to no write at all.
+Both tasks read deals, activities, notes, accounts and knowledgebase notes before and after the run (knowledgebase notes only when the login can read them; the evidence says when they were skipped), and record every tool the run asks for, *before* the client decides. A write attempt fails the task even though the client blocks it. If records changed but no write was asked for, the change was made by another login: it is reported, not counted. v1 has no model, so in task 11 "refusing" means that the request to close deals and log calls (passed as `--prompt`) leads to no write at all.
 
 ## Tasks without the brief yet ("component" mode)
 Until `report.build()` exists, a task in `tasks_brief.py` drives its own module directly on live rows, and its score is capped at 0.5. That way a component pass is never counted as a pass of the brief. When `build()` is importable, the same task runs the whole brief, and the cap is lifted.

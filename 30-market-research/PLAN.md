@@ -1,6 +1,6 @@
 # Seat 30 — Market Research: Seat Plan
 
-**Seat lead:** Sunil (merges) · **Reviewer:** Deepak · **Team:** Sunil, Deepak
+**Seat lead:** Sunil · **Reviewer:** Deepak · **Merges:** the instructor, within a day of approval (tag him) · **Team:** Sunil, Deepak
 Confirmed by the instructor on 23 Nov 2026. Seat 31 keeps priority.
 
 **Scope (seat README):** a weekly market and competitor brief tied to the CRM pipeline.
@@ -25,9 +25,9 @@ Platform detail (hostnames, record counts, exact requests and replies) is kept o
 
 | Date | Milestone | Seat 30 deliverable | Status |
 |---|---|---|---|
-| 15 Nov 2026 | First task | Brief for the 10 largest open deals | Seat taken on 23 Nov; delivered with v1 (question 4) |
-| 30 Nov 2026 | Version 1 | First task + 12-task suite in the `34-eval-harness/TASK_FORMAT.md` format, both systems | In progress: Deepak's half done (`client.py`, `rows.py`, `changes.py`, `nextstep.py`, `suite.py`, tasks 7–12). Live on both systems, tasks 8–12 pass at 0.5 in component mode until `report.build()` exists; task 7 waits for `accounts.py`. Still to do: tasks 1–6, `deals.py`, `accounts.py` and the brief (Sunil) |
-| 20 Dec 2026 | Integration run | Brief alongside the other seats on a copy | Planned |
+| 15 Nov 2026 | First task | Brief for the 10 largest open deals | Seat taken on 23 Nov; delivered with v1 (confirmed by the instructor, 24 Nov) |
+| 30 Nov 2026 | Version 1 | First task + 12-task suite in the `34-eval-harness/TASK_FORMAT.md` format, both systems. Judged on our own suite run on `main`, plus one harness run on 30 Nov | In progress: Deepak's half done (`client.py`, `rows.py`, `changes.py`, `nextstep.py`, `suite.py`, tasks 7–12). Live on both systems, tasks 8–12 pass at 0.5 in component mode until `report.build()` exists; task 7 waits for `accounts.py`. Still to do: tasks 1–6, `deals.py`, `accounts.py` and the brief (Sunil) |
+| 20 Dec 2026 | Integration run | Brief alongside the other seats on a copy. The copy starts fresh, so this brief is a baseline | Planned |
 | 31 Dec 2026 | Final | Definition of done met | Planned |
 
 ## How the brief works (v1)
@@ -87,12 +87,12 @@ Every task builds its inputs from the copy at runtime and is judged on the data,
 
 ## How we work in git
 
-**At most two PRs for v1, one per person.** The roles are seat 31's, swapped: Sunil merges, Deepak reviews.
+**At most two PRs for v1, one per person.** Each PR is reviewed by the other person. After approval, the reviewer tags the instructor, who merges within a day.
 
 | PR | Branch | Commits | Opened | Reviewer → merges |
 |---|---|---|---|---|
-| 1 | `seat30/deepak-v1` | `.gitignore` → setup (`PLAN.md`, `client.py`, `rows.py`) → `changes.py` + tasks 8–9 → `nextstep.py` + tasks 10–12 → `suite.py` + task 7 | 27 Nov | Sunil, by 28 Nov |
-| 2 | `seat30/sunil-v1` | `deals.py` + tasks 1–6 → `accounts.py` → `report.py`, `__main__.py`, `--prompt` | 28 Nov, after PR 1 merges | Deepak reviews → Sunil merges, by 29 Nov |
+| 1 | `seat30/deepak-v1` | `.gitignore` → setup (`PLAN.md`, `client.py`, `rows.py`) → `changes.py` + tasks 8–9 → `nextstep.py` + tasks 10–12 → `suite.py` + task 7 | 27 Nov | Sunil reviews → instructor merges, by 28 Nov |
+| 2 | `seat30/sunil-v1` | `deals.py` + tasks 1–6 → `accounts.py` → `report.py`, `__main__.py`, `--prompt` | 28 Nov, after PR 1 merges | Deepak reviews → instructor merges, by 29 Nov |
 
 - Sunil cherry-picks the two setup commits from `seat30/deepak-v1` and builds on them. He never branches from it. After PR 1 merges, `git rebase upstream/main` drops them from his branch.
 - Before either PR opens (27 Nov), both branches are merged into a local branch that is never pushed. The full suite runs there on both systems, and every fix goes on the owner's own branch.
@@ -150,11 +150,22 @@ Both tasks read deals, activities, notes and accounts before and after the run, 
 ## Tasks without the brief yet ("component" mode)
 Until `report.build()` exists, a task in `tasks_brief.py` drives its own module directly on live rows, and its score is capped at 0.5. That way a component pass is never counted as a pass of the brief. When `build()` is importable, the same task runs the whole brief, and the cap is lifted.
 
-## Open questions for the instructor
-1. Is there a seat 30 login, or do we use our seat 31 one? Does it include the knowledgebase tools?
-2. Deal data has not changed for several weeks, and the platform keeps no deal history. Is "changes since the agent's previous run, first run marked as baseline" acceptable for "what changed"?
-3. "Largest" = value in the base currency, leaving out zero values and unknown currencies, with a fixed tie-break. Is that the intended rule?
-4. The 15 Nov first task has passed. Can it be delivered with v1 on 30 Nov?
+## Instructor answers (24 Nov 2026)
+1. **Login:** seat 30 has its own logins, one per person, with the knowledgebase tools (switched on by the instructor).
+2. **What changed:** "changes since the agent's previous run, first run marked as baseline" is accepted.
+3. **Largest:** value in the base currency, leaving out zero values and unknown currencies, with a fixed tie-break. Accepted.
+4. **First task:** delivered with v1 and its 12-task suite on 30 Nov.
+5. **More than one company:** one top-10 list per company.
+6. **Other seats' test data:** ranked and flagged as "looks like test data", never hidden.
+7. **Deals with no pipeline:** open, listed as a data issue, and noted in `findings/` as an observation, not a bug.
+8. **Passed close dates:** not deliberate in the test data; the brief reports them as they are, with "confirm a new close date".
+9. **Next steps:** rule-based, with reasons and no model calls, for v1.
+10. **Judging:** our own 12-task suite run on `main`, plus one harness run on 30 Nov.
+11. **Merging:** the instructor merges within a day of approval; tag him.
+12. **Reader:** a sales manager; a weekly run on demand. The 20 Dec copy starts fresh, so that run is a baseline.
+13. **Market part:** after v1. Knowledgebase first, then the platform's read-only web search tool, with a source for every claim. The instructor announces when it is on.
+
+Still open: whether some activity data on one system is intended (see BUG-30-001), and whether the platform's days-in-stage counter resets on a stage change.
 
 ## Bug list
 One file per finding in `findings/BUG-30-NNN.md`, in the course format (`BUG_REPORT_FORMAT.md`).
@@ -162,3 +173,9 @@ One file per finding in `findings/BUG-30-NNN.md`, in the course format (`BUG_REP
 | Bug | Title | System | Status |
 |---|---|---|---|
 | [BUG-30-001](findings/BUG-30-001.md) | Some activities have a word instead of a date in their due date | Suryodaya | Open |
+
+Observations (not bugs; noted in `findings/` at the instructor's request):
+
+| Observation | Title | System | Status |
+|---|---|---|---|
+| [OBS-30-001](findings/OBS-30-001.md) | Some open deals have a stage but no pipeline | Suryodaya | Noted; the brief keeps them open and lists a data issue |

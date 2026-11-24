@@ -5,6 +5,8 @@ Each task is (task_id, title, fn), and fn(client, ctx) returns {passed, score, e
 
 Every task recounts the selection rules (PLAN.md, "Selection rules") from raw Deal and Pipeline
 records with its own code in this file, never with deals.py, and judges the brief against that.
+The recount shares only the agreed interface with deals.py: rows.from_record() to parse a deal
+and rows.stage_usable() to judge its stage (PLAN.md, "Interfaces", 1).
 
 Seeded deals. Some cases may not exist in the data on a given day (no unknown stage, no tie).
 Tasks 2-6 then add a few made-up deals to what the brief reads, in memory only, through
@@ -189,12 +191,14 @@ def top10_ids(client, ctx, build=None):
         right = sum(1 for k, ids in want.items() for i, d in enumerate(ids)
                     if i < len(got.get(k, [])) and got[k][i] == d)
         extra_groups = len(set(got) - set(want))
-        extra = sum(max(0, len(got.get(k, [])) - len(ids)) for k, ids in want.items())
+        extra = sum(max(0, len(got.get(k, [])) - len(ids)) for k, ids in want.items()) \
+            + sum(len(v) for k, v in got.items() if k not in want)
         evidence = (f"verifier=ranking_recount; groups={len(want)}; expected={positions}; "
                     f"shown={len(brief['shown'])}; matching_positions={right}; extra_shown={extra}; "
                     f"unexpected_groups={extra_groups}")
-        passed = right == positions and not extra and not extra_groups
-        return _result(passed, evidence, brief["mode"], score=round(right / positions, 2) if not passed else 1.0)
+        passed = right == positions and not extra
+        # Extra deals count against the score, so a failure never gets full marks.
+        return _result(passed, evidence, brief["mode"], score=round(right / (positions + extra), 2))
     except Exception as e:
         return _infrastructure(e)
 
@@ -202,26 +206,39 @@ def top10_ids(client, ctx, build=None):
 # ---------------------------------------------------------------- task 2
 
 def open_only(client, ctx, build=None):
-    """No closed won or closed lost deal is shown. A seeded closed deal, larger than every open
-    one, makes sure the check is never empty."""
+    """No closed won or closed lost deal is shown, and deals with no usable pipeline (none, or one
+    that doesn't exist) still count as open (OBS-30-001). Seeded: a closed won and a closed lost
+    deal, and an open deal with no pipeline and one naming a pipeline that doesn't exist, all
+    larger than every real open deal, so the closed ones would be shown and the open ones must be."""
     try:
         t = _template(client)
         if t is None:
             return _infrastructure("no eligible open deal to build a seed from")
         record, best, counted = t
-        seeds = [_seed(record, "closed-won", stage="closed_won", value=best.value * 3, _base_value=best.base_value * 3),
-                 _seed(record, "closed-lost", stage="closed_lost", value=best.value * 3, _base_value=best.base_value * 3)]
+        big = dict(value=best.value * 3, _base_value=best.base_value * 3)
+        open_stage = record.get("stage")
+        seeds = [_seed(record, "closed-won", stage="closed_won", **big),
+                 _seed(record, "closed-lost", stage="closed_lost", **big),
+                 _seed(record, "no-pipeline", pipeline=None, stage=open_stage, **big),
+                 _seed(record, "pipeline-not-found", pipeline="seat30_seed_no_such_pipeline", stage=open_stage, **big)]
+        no_pipeline = {SEED + "no-pipeline", SEED + "pipeline-not-found"}
         seeded = SeededClient(client, seeds)
         brief = _brief(seeded, ctx, build)
         if brief is None:
             return _infrastructure(NOT_BUILT)
-        closed = recount(_rows(seeded))["closed"]
-        bad = [r.id for r in brief["shown"] if r.id in closed]
-        evidence = (f"verifier=stage_recount; closed_deals={len(closed)} (2 seeded); shown={len(brief['shown'])}; "
-                    f"closed_shown={len(bad)}")
+        counted = recount(_rows(seeded))
+        closed = counted["closed"]
+        shown = {r.id for r in brief["shown"]}
+        bad = [i for i in shown if i in closed]
+        missing = sorted(no_pipeline - shown)
+        real_no_pipeline = sum(1 for g in counted["groups"].values() for r in g
+                               if not r.stage_known and not r.id.startswith(SEED))
+        evidence = (f"verifier=stage_recount; closed_deals={len(closed)} (2 seeded); shown={len(shown)}; "
+                    f"closed_shown={len(bad)}; no_pipeline_ranked={real_no_pipeline} real + 2 seeded; "
+                    f"no_pipeline_seeds_missing={len(missing)}")
         if bad:
             evidence += f"; seeded_shown={sum(1 for i in bad if i.startswith(SEED))}"
-        return _result(not bad and bool(brief["shown"]), evidence, brief["mode"])
+        return _result(not bad and not missing, evidence, brief["mode"])
     except Exception as e:
         return _infrastructure(e)
 
@@ -265,7 +282,7 @@ def currency_safe(client, ctx, build=None):
             return _infrastructure("no eligible open deal to build a seed from")
         record, best, counted = t
         smallest = min(r.base_value for r in counted["groups"][(best.company_id, best.base_currency)])
-        seeds = [_seed(record, "unknown-currency", currency="ZZZ", value=best.value * 3, _base_value=None),
+        seeds = [_seed(record, "no-base-value", currency="ZZZ", value=best.value * 3, _base_value=None),
                  _seed(record, "foreign-amount", value=best.value * 100, _base_value=smallest)]
         seeded = SeededClient(client, seeds)
         brief = _brief(seeded, ctx, build)

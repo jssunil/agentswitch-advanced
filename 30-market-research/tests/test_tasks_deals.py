@@ -81,6 +81,16 @@ class TasksDealsTest(unittest.TestCase):
         r = tasks_deals.top10_ids(self.client, self.ctx,
                                   build=lambda c, i, a, top=10, **k: honest_build(c, i, a, top=11))
         self.assertFalse(r["passed"])
+        self.assertEqual(r["score"], round(10 / 11, 2))     # every position right, one extra: not full marks
+
+    def test_no_pipeline_deals_left_out_fails_task2(self):
+        def stage_known_only(client, instance, as_of, top=10, **_):
+            ranked, issues = deals.open_deals(tasks_deals._rows(client))
+            ranked = [r for r in ranked if r.stage_known]
+            return {"deals": [{"row": to_dict(r)} for r in deals.top(ranked, top)], "data_issues": issues}
+        r = tasks_deals.open_only(self.client, self.ctx, build=stage_known_only)
+        self.assertFalse(r["passed"])
+        self.assertIn("no_pipeline_seeds_missing=2", r["evidence"])
 
     def test_closed_deal_shown_fails_task2(self):
         def ranks_closed(client, instance, as_of, top=10, **_):

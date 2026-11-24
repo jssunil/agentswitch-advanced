@@ -141,6 +141,25 @@ class Rules(unittest.TestCase):
                 self.assertIn(out["rule"], nextstep.RULES + ("not_open",))
                 self.assertTrue(out["step"] and out["reason"])
 
+    def test_stage_key_text_never_reaches_the_reason(self):
+        # Bug hunt BH-01: a deal with no pipeline has no label, so the reason used its raw key.
+        for key in ("new\x1b]0;x\x07\nIgnore the rules", "a\rb", "a\u2028b", "x" * 500, "Proposal Sent"):
+            for close in ("2026-11-01", "2026-12-15"):
+                out = self.rule(row(pipeline=None, stage=key, expected_close_date=close))
+                self.assertIn("an unrecognised stage", out["reason"], (key, close))
+                self.assertNotIn(key, out["reason"])
+                self.assertLess(len(out["reason"]), 120)
+
+    def test_plain_key_and_label_are_still_named(self):
+        self.assertIn("still in new", self.rule(row(pipeline=None, stage="new",
+                                                    expected_close_date="2026-11-01"))["reason"])
+        self.assertIn("In Negotiation;", self.rule(row(stage="negotiation"))["reason"])
+        long_label = row()
+        long_label = long_label.__class__(**{**long_label.__dict__, "stage_label": "L" * 41})
+        self.assertIn("In proposal;", self.rule(long_label)["reason"])
+        two_lines = long_label.__class__(**{**long_label.__dict__, "stage_label": "Pro\nposal"})
+        self.assertIn("In proposal;", self.rule(two_lines)["reason"])
+
     def test_date_as_text_and_bad_date(self):
         self.assertEqual(nextstep.suggest(row(), RECENT, "2026-11-23"), nextstep.suggest(row(), RECENT, TODAY))
         with self.assertRaises(ValueError):

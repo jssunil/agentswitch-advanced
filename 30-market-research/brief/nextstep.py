@@ -23,8 +23,13 @@ needs a missing fact does not match, and nothing is guessed.
 
 Returns {rule, step, reason}; rule 2 also returns `activity` {id, subject, due_date}. The step
 and the reason are always our own fixed wording. Record text (the activity's subject) never goes
-inside them: report.py shows it separately, quoted and escaped, as CRM text.
+inside them: report.py shows it separately, quoted and escaped, as CRM text. The one piece of
+the deal the reasons name is its stage, and only when it is plain (see _stage_words): a short,
+one-line label, or a key of lower-case letters, digits and "_". Anything else is "an
+unrecognised stage" (bug hunt BH-01, 24 Nov).
 """
+import re
+import unicodedata
 from datetime import date
 
 from .values import business_date, display_text
@@ -36,6 +41,8 @@ NO_CONTACT_DAYS = 30
 PROPOSAL_WAIT_DAYS = 14
 PROPOSAL_WAITING_ON = False   # rule 5 on hold until the instructor says what resets the counter
 SUBJECT_MAX = 80
+STAGE_MAX = 40                     # longest stage label or key the reasons will name
+PLAIN_KEY = re.compile(r"[a-z0-9_]{1,%d}" % STAGE_MAX)
 OVERDUE_STEP = "Complete the overdue activity"
 
 
@@ -43,7 +50,7 @@ def suggest(row, facts, as_of):
     """{rule, step, reason} for one open deal on `as_of`."""
     as_of = _day(as_of)
     facts = facts if isinstance(facts, dict) else {}
-    stage = row.stage_label or row.stage or "an unknown stage"
+    stage = _stage_words(row)
 
     if row.stage in CLOSED:
         return _out("not_open", "No action: the deal is closed", f"Stage is {stage}")
@@ -118,6 +125,20 @@ def _overdue_activity(activities, as_of):
         if oldest is None or key < oldest[0]:
             oldest = (key, activity_id, subject, due)
     return None if oldest is None else oldest[1:]
+
+
+def _stage_words(row):
+    """How the reasons name the deal's stage. The label (already display_text'd by rows.py) is
+    used when it is one line of at most STAGE_MAX characters; otherwise the key, when it is a
+    plain key. A deal with no usable pipeline has no label, so its raw key would otherwise go
+    into our wording as given (BH-01)."""
+    label = row.stage_label.strip() if isinstance(row.stage_label, str) else ""
+    if label and len(label) <= STAGE_MAX and not any(
+            unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in label):
+        return label
+    if isinstance(row.stage, str) and PLAIN_KEY.fullmatch(row.stage):
+        return row.stage
+    return "an unknown stage" if row.stage is None else "an unrecognised stage"
 
 
 def _out(rule, step, reason):

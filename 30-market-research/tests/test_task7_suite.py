@@ -38,6 +38,13 @@ ACTIVITIES = [
     act(9, party_id="pa1", due_date="2026-11-29"),                       # account-level: ignored, d01 has its own
     act(10, party_id="pa2", due_date="2026-10-01", type="email"),        # d02: falls back to its account
     act(11, party_id="pa2", due_date="2026-11-15", done=False),
+    act(12, party_id="pa2", deal_id="d05", due_date="2026-11-28"),       # another deal's call on pa2: not d02's
+    act(13, party_id="pa4", due_date="2026-11-12", type=" Call "),       # d04: type matched case-insensitively
+    act(14, deal_id="d06", due_date="2026-11-05", done=False, cancelled=True),  # d06: only a cancelled one
+    act(15, party_id="pa6", due_date="2026-11-18", type="meeting"),      # so d06 falls back to its account
+    act(16, party_id="pa7", due_date="2026-11-20", type="lunch"),        # d07: lunch is not a contact
+    act(17, party_id="pa8", due_date="2026-11-22", type="email"),        # d08: two contacts on one date,
+    act(18, party_id="pa8", due_date="2026-11-22", type="meeting"),      # the higher id (a18) wins
 ]
 
 
@@ -67,6 +74,36 @@ class ExpectedFacts(unittest.TestCase):
         self.assertEqual(f["source"], "party")
         self.assertEqual(f["last_contact"], {"date": "2026-10-01", "type": "email"})
         self.assertEqual(f["open_activities"], [{"id": "a11", "due_date": "2026-11-15", "overdue": True}])
+
+    def test_fallback_ignores_other_deals_activities(self):
+        # edge case 16: a12 belongs to d05, so it neither counts for d02 nor stops d02's fallback
+        f = self.facts(2)
+        self.assertNotEqual(f["last_contact"], {"date": "2026-11-28", "type": "call"})
+        self.assertEqual(self.facts(5)["source"], "deal")
+        self.assertEqual(self.facts(5)["last_contact"], {"date": "2026-11-28", "type": "call"})
+
+    def test_contact_type_case_insensitive(self):
+        self.assertEqual(self.facts(4)["last_contact"], {"date": "2026-11-12", "type": "call"})
+
+    def test_cancelled_ignored_when_choosing_source(self):
+        f = self.facts(6)
+        self.assertEqual(f["source"], "party")
+        self.assertEqual(f["last_contact"], {"date": "2026-11-18", "type": "meeting"})
+        self.assertEqual(f["open_activities"], [])
+
+    def test_lunch_is_not_a_contact(self):
+        f = self.facts(7)
+        self.assertEqual((f["source"], f["last_contact"]), ("party", None))
+
+    def test_same_date_tie_goes_to_highest_id(self):
+        self.assertEqual(self.facts(8)["last_contact"], {"date": "2026-11-22", "type": "meeting"})
+
+    def test_compare_accepts_type_in_any_case(self):
+        want = self.facts(1)
+        got = {"name": want["name"], "redacted": [], "source": "deal",
+               "last_contact": {"date": "2026-11-25", "type": "Call", "subject": "x"},
+               "open_activities": [dict(a) for a in want["open_activities"]]}
+        self.assertNotIn("last_contact", tasks_brief._compare_facts(want, got))
 
     def test_nothing_and_redacted_name(self):
         f = self.facts(3)
@@ -114,7 +151,7 @@ class AccountFacts(unittest.TestCase):
     def test_correct_facts_pass(self):
         r = self.run_task(good_facts)
         self.assertTrue(r["passed"], r["evidence"])
-        self.assertIn("deals=10; with_activity=2; wrong_deals=0", r["evidence"])
+        self.assertIn("deals=10; with_activity=6; wrong_deals=0", r["evidence"])
 
     def test_each_kind_of_mistake_is_caught(self):
         def wrong(change):

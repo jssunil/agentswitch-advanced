@@ -102,37 +102,47 @@ def expected_facts(row, parties, activities, as_of):
     rules in PLAN.md ("Account facts rules"), never from accounts.py:
 
     - name: the account's (Party) name; None, and "name" in `redacted`, if hidden from this seat.
-    - The deal's own activities count first. Only if it has none, the account's are used
-      (source "party"). source is None when there are neither.
-    - last_contact: the latest done, not cancelled call, meeting or email dated on or before
-      as_of, as {date, type}; None if there is none.
-    - open_activities: every activity not done and not cancelled, as {id, due_date, overdue},
-      where overdue means due before as_of.
+    - Cancelled activities are ignored completely, also when choosing the source.
+    - The deal's own activities count first. Only if it has none, the account's own activities
+      are used (source "party"): those on the account with no deal, never another deal's
+      (edge case 16). source is None when there are neither.
+    - last_contact: the latest done call, meeting or email (type matched case-insensitively,
+      trimmed) dated on or before as_of, as {date, type}; ties on the date go to the highest
+      activity id, compared as text; None if there is none.
+    - open_activities: every activity not done, as {id, due_date, overdue}, where overdue means
+      due before as_of. A due date that isn't a date counts as none: not overdue.
     """
     party = parties.get(row.party_id)
     redacted = set((party or {}).get("_redacted_fields") or ())
     name = None if party is None or "name" in redacted else party.get("name")
-    pool = [a for a in activities if row.id and a.get("deal_id") == row.id]
+    usable = [a for a in activities if a.get("cancelled") is not True]
+    pool = [a for a in usable if row.id and a.get("deal_id") == row.id]
     source = "deal" if pool else None
     if not pool and row.party_id:
-        pool = [a for a in activities if a.get("party_id") == row.party_id]
+        pool = [a for a in usable if a.get("party_id") == row.party_id and not a.get("deal_id")]
         source = "party" if pool else None
     last = None
     for a in pool:
-        if a.get("done") is not True or a.get("cancelled") is True or a.get("type") not in CONTACT_TYPES:
+        kind = contact_type(a.get("type"))
+        if a.get("done") is not True or kind not in CONTACT_TYPES:
             continue
         day = _day_or_none(a.get("due_date"))
         if day is None or day > as_of:
             continue
         key = (day, str(a.get("id")))
         if last is None or key > last[0]:
-            last = (key, {"date": day.isoformat(), "type": a.get("type")})
+            last = (key, {"date": day.isoformat(), "type": kind})
     open_ = sorted(({"id": str(a.get("id")), "due_date": _iso(_day_or_none(a.get("due_date"))),
                      "overdue": bool(_day_or_none(a.get("due_date")) and _day_or_none(a.get("due_date")) < as_of)}
-                    for a in pool if a.get("done") is not True and a.get("cancelled") is not True),
+                    for a in pool if a.get("done") is not True),
                    key=lambda x: (x["due_date"] is None, x["due_date"] or "", x["id"]))
     return {"name": name, "name_redacted": "name" in redacted, "source": source,
             "last_contact": None if last is None else last[1], "open_activities": open_}
+
+
+def contact_type(value):
+    """An activity type as task 7 compares it: trimmed and lower case; None if it isn't text."""
+    return value.strip().lower() if isinstance(value, str) else None
 
 
 def _day_or_none(value):
@@ -174,7 +184,7 @@ def _compare_facts(want, got):
     if want["source"] != got.get("source"):
         wrong.append("source")
     lc = got.get("last_contact")
-    got_lc = None if lc is None else ({"date": _iso(_day_or_none(lc.get("date"))), "type": lc.get("type")}
+    got_lc = None if lc is None else ({"date": _iso(_day_or_none(lc.get("date"))), "type": contact_type(lc.get("type"))}
                                       if isinstance(lc, dict) else "bad")
     if got_lc != want["last_contact"]:
         wrong.append("last_contact")

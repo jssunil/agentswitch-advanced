@@ -113,11 +113,12 @@ Task 7 recounts these from raw records, so `facts()` must follow them exactly:
 | Fact | Rule |
 |---|---|
 | `name` | The account's name. If the seat can't see it (`name` in the record's redacted fields), `name` is `None` and `"name"` is in `redacted` |
-| `source` | `"deal"` if the deal has activities of its own; otherwise `"party"` if its account has any; otherwise `None`. The same set of activities is used for the two facts below |
-| `last_contact` | The latest activity that is done, not cancelled, of type call, meeting or email, and dated (`due_date`) on or before `as_of`, as `{date, type, subject}`; `None` if there is none |
-| `open_activities` | Every activity not done and not cancelled, as `{id, subject, due_date, overdue}`, where `overdue` means the due date is before `as_of`. An activity with no due date is not overdue |
+| Cancelled activities | Ignored completely, including when choosing `source` |
+| `source` | `"deal"` if the deal has activities of its own; otherwise `"party"` if its account has activities of its **own** (on the account, with no deal); otherwise `None`. Another deal's activities never count for this deal, even when it is on the same account. The same set of activities is used for the two facts below |
+| `last_contact` | The latest activity that is done, of type call, meeting or email (matched case-insensitively and trimmed; other types such as task or lunch don't count), and dated (`due_date`) on or before `as_of`, as `{date, type, subject}`. If two share the latest date, the one with the highest activity id (compared as text) wins. A done activity with no usable due date doesn't count. `None` if there is none |
+| `open_activities` | Every activity not done, as `{id, subject, due_date, overdue}`, where `overdue` means the due date is before `as_of`. An activity with no due date, or a due date that isn't a date, is not overdue and shows no due date |
 
-Task 7 compares `name`, `source`, `last_contact` (date and type) and `open_activities` (id, due date, overdue) for every deal the brief shows. Subjects are free text and are not compared. Read activities and accounts once per run, not once per deal.
+Task 7 compares `name`, `source`, `last_contact` (date, and type in any letter case) and `open_activities` (id, due date, overdue) for every deal the brief shows. Subjects are free text and are not compared. Read activities and accounts once per run, not once per deal.
 
 ## Running the suite
 ```

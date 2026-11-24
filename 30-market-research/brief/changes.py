@@ -112,7 +112,8 @@ def compare(rows, folder, instance, as_of, all_rows=None, top=None, since=None):
 
     `rows` are the deals the brief shows now. `all_rows` (optional) are every deal read this
     run. With them, a deal that left the list gets a reason: closed won or lost, stage not
-    recognised, value changed, an exchange-rate change, or outranked. Without them the reason is
+    recognised, left out (value missing or zero or less, or no usable base value), moved to another
+    company or currency list, value changed, an exchange-rate change, or outranked. Without them the reason is
     only "not in this week's list".
 
     `top` is this run's --top. With it, last week's list is recomputed from the saved ranking as
@@ -279,6 +280,17 @@ def _drop_reason(old, everything):
         return CLOSED[now.stage]
     if not stage_usable(now):             # a deal with no usable pipeline is open and ranked (OBS-30-001)
         return "stage not recognised"
+    # Bug hunt BH-05: the other left-out reasons, in the order deals.left_out_reason() checks them,
+    # then a move to another list (one list per company and base currency). Only then is a value
+    # change or "outranked" the reason.
+    if now.value is None:
+        return "left out: value missing or not readable"
+    if now.value <= 0:
+        return "left out: value zero or less"
+    if now.currency is None or now.base_currency is None or now.base_value is None or now.base_value <= 0:
+        return "left out: no usable base value"
+    if (now.company_id, now.base_currency) != (old.company_id, old.base_currency):
+        return "moved to another company or currency list"
     if not _same(old.base_value, now.base_value):
         if _rate_only(old, now):
             return "outranked after an exchange-rate change"

@@ -157,6 +157,18 @@ class EnteredAndDropped(Base):
                 self.assertEqual(out["dropped"], [{"id": "d02", "title": "Deal 2", "reason": "outranked by other deals"}])
 
 
+    def test_left_out_and_moved_deals_are_not_outranked(self):
+        # Bug hunt BH-05: base value unchanged, so these used to read "outranked by other deals".
+        cases = {"left out: value zero or less": {"value": 0},
+                 "left out: value missing or not readable": {"value": None},
+                 "left out: no usable base value": {"_base_currency": "??"},
+                 "moved to another company or currency list": {"company_id": "c2"}}
+        for reason, over in cases.items():
+            with self.subTest(reason=reason):
+                everything = rows(deal(1), deal(2), deal(3), deal(4), deal(5, **over))
+                out = changes.compare(everything[:4], self.folder, "keystone", TODAY, all_rows=everything)
+                self.assertEqual(out["dropped"], [{"id": "d05", "title": "Deal 5", "reason": reason}])
+
 class WholeRanking(Base):
     """Edge case 7: the snapshot holds every ranked deal, so --top can change between runs."""
     def setUp(self):

@@ -160,7 +160,7 @@ The first rule that matches wins, and the brief prints the reason next to the st
 | 1 | `close_date_passed` | Expected close date is before the brief's date | Confirm a new close date with the deal owner |
 | 2 | `overdue_activity` | An open activity is past its due date (the oldest one is returned as `activity`; a due date that isn't a date is never overdue) | Complete the overdue activity |
 | 3 | `no_recent_contact` | No contact recorded, or the last one is 30+ days old | Call or email the main contact |
-| 4 | `fix_record` | No close date, probability 0, probability 100 on a deal that is still open, or a value that could not be read | Ask the deal owner to update the deal record |
+| 4 | `fix_record` | No close date, probability 0, probability 100 on a deal that is still open, probability outside 0–100, or a value that could not be read | Ask the deal owner to update the deal record |
 | 5 | `proposal_waiting` | **On hold:** proposal stage with no movement for 14+ days. The platform's counter may track the deal's age rather than its time in the stage (instructor question), so the rule is switched off and the deal falls through to the next rule | Follow up on the proposal with the main contact |
 | 6 | `negotiation` | Negotiation stage | Agree the final terms and a signing date |
 | 7 | `keep_moving` | None of the above | Agree the next meeting with the main contact |

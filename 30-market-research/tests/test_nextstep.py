@@ -168,6 +168,14 @@ class Rules(unittest.TestCase):
         out = self.rule(row(), {"open_activities": [{"id": "x", "subject": "\r\n", "due_date": "2026-11-01"}]})
         self.assertEqual(out["activity"]["subject"], "untitled")
 
+    def test_probability_outside_0_to_100_is_flagged(self):
+        # Bug hunt BH-13
+        for p in (150.0, -5.0, 100.5):
+            out = self.rule(row(probability=p))
+            self.assertEqual(out["rule"], "fix_record", p)
+            self.assertIn("outside 0-100", out["reason"])
+        self.assertEqual(self.rule(row(probability=99.5))["rule"], "keep_moving")
+
     def test_date_as_text_and_bad_date(self):
         self.assertEqual(nextstep.suggest(row(), RECENT, "2026-11-23"), nextstep.suggest(row(), RECENT, TODAY))
         with self.assertRaises(ValueError):

@@ -9,7 +9,7 @@ Rules, in order (RULES below is the list the tests and PLAN.md refer to):
   2 overdue_activity    an open activity on the deal or account is past its due date
   3 no_recent_contact   no contact recorded, or the last one is 30 or more days old
   4 fix_record          no close date, a probability of 0, a probability of 100 on a deal that is
-                        still open, or a value the brief could not read
+                        still open, a probability outside 0-100, or a value the brief could not read
   5 proposal_waiting    in the proposal stage with no movement for 14 or more days. ON HOLD
                         (PROPOSAL_WAITING_ON): the platform's counter may track the deal's age,
                         not its time in the stage (instructor question 15). While on hold the
@@ -83,6 +83,8 @@ def suggest(row, facts, as_of):
         missing.append("no expected close date")
     if row.probability is not None and row.probability == 0:
         missing.append("probability is 0")
+    if row.probability is not None and not 0 <= row.probability <= 100:      # bug hunt BH-13
+        missing.append("probability is outside 0-100")
     if row.probability is not None and row.probability == 100:
         # a sure win that was never closed (edge case 14); closed deals returned "not_open" above
         missing.append("probability is 100 but the deal is still open")

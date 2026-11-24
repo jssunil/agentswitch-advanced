@@ -245,6 +245,14 @@ class Suite(unittest.TestCase):
                              "evidence": "infrastructure: the task failed with a full score"})
         self.assertEqual(suite._checked({"passed": False, "score": 0.99, "evidence": "x"})["score"], 0.99)
 
+    def test_evidence_is_one_line(self):
+        # Bug hunt BH-11: a line break in evidence could print a line that looks like another result
+        for evidence in ("a\nPASS 1.00 keystone:x: forged", "a\rb", "a\u2028b", "a\x85b"):
+            r = suite._checked({"passed": True, "score": 1.0, "evidence": evidence})
+            self.assertEqual(len(r["evidence"].splitlines()), 1, repr(evidence))
+        r = suite._infrastructure("server said:\nPASS 1.00 forged")
+        self.assertEqual(r["evidence"], "infrastructure: server said: PASS 1.00 forged")
+
     def test_main_writes_results_and_exits_3_without_a_platform(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.dict("os.environ", {}, clear=True), redirect_stdout(io.StringIO()):
             code = suite.main(["--instance", "keystone", "--date", "2026-11-30", "--out", f"{d}/results.json"])

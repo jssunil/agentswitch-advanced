@@ -95,7 +95,13 @@ def write_results(path, payload):
 
 
 def _infrastructure(reason):
-    return {"passed": False, "score": 0.0, "evidence": f"infrastructure: {display_text(reason)[:200]}"}
+    return {"passed": False, "score": 0.0, "evidence": f"infrastructure: {_one_line(reason)[:200]}"}
+
+
+def _one_line(text):
+    """Evidence is printed one task per line: no control characters and no line breaks of any kind,
+    so server text inside an error can't add a line that looks like a result (bug hunt BH-11)."""
+    return " ".join(display_text(text).split())
 
 
 def _checked(r):
@@ -109,7 +115,7 @@ def _checked(r):
         return _infrastructure("the task passed with a score of 0")
     if not r["passed"] and score == 1.0:      # bug hunt BH-10: a failure never gets full marks
         return _infrastructure("the task failed with a full score")
-    return {"passed": r["passed"], "score": float(score), "evidence": display_text(r["evidence"])}
+    return {"passed": r["passed"], "score": float(score), "evidence": _one_line(r["evidence"])}
 
 
 def main(argv=None):

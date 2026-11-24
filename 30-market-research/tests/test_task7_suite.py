@@ -238,6 +238,13 @@ class Suite(unittest.TestCase):
             out = suite.run_suite(client(), "keystone", AS_OF)
         self.assertEqual(out["tasks"][0]["evidence"], "infrastructure: RuntimeError: x")
 
+    def test_failed_task_with_a_full_score_is_infrastructure(self):
+        # Bug hunt BH-10: the mirror of "passed with a score of 0"
+        r = suite._checked({"passed": False, "score": 1.0, "evidence": "x"})
+        self.assertEqual(r, {"passed": False, "score": 0.0,
+                             "evidence": "infrastructure: the task failed with a full score"})
+        self.assertEqual(suite._checked({"passed": False, "score": 0.99, "evidence": "x"})["score"], 0.99)
+
     def test_main_writes_results_and_exits_3_without_a_platform(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.dict("os.environ", {}, clear=True), redirect_stdout(io.StringIO()):
             code = suite.main(["--instance", "keystone", "--date", "2026-11-30", "--out", f"{d}/results.json"])

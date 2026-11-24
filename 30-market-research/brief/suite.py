@@ -107,6 +107,8 @@ def _checked(r):
         return _infrastructure("the task returned a score outside 0.0-1.0")
     if r["passed"] and score == 0.0:
         return _infrastructure("the task passed with a score of 0")
+    if not r["passed"] and score == 1.0:      # bug hunt BH-10: a failure never gets full marks
+        return _infrastructure("the task failed with a full score")
     return {"passed": r["passed"], "score": float(score), "evidence": display_text(r["evidence"])}
 
 

@@ -71,6 +71,16 @@ class Rules(unittest.TestCase):
         self.assertEqual(self.rule(row(value="NaN"))["rule"], "fix_record")
         self.assertNotEqual(self.rule(row(probability=None))["rule"], "fix_record")
 
+    def test_probability_100_on_open_deal_is_fix_record(self):
+        # edge case 14: a sure win that was never closed
+        out = self.rule(row(probability=100.0))
+        self.assertEqual(out["rule"], "fix_record")
+        self.assertEqual(out["reason"], "Probability is 100 but the deal is still open")
+        self.assertNotEqual(self.rule(row(probability=99.0))["rule"], "fix_record")
+        # an earlier rule still wins
+        self.assertEqual(self.rule(row(probability=100.0, expected_close_date="2026-10-31"))["rule"],
+                         "close_date_passed")
+
     def test_proposal_waiting_and_boundary(self):
         self.assertEqual(self.rule(row(_rot_days=14))["rule"], "proposal_waiting")
         self.assertEqual(self.rule(row(_rot_days=13))["rule"], "keep_moving")

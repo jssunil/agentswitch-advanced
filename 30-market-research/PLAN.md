@@ -143,12 +143,14 @@ The first rule that matches wins, and the brief prints the reason next to the st
 | 1 | `close_date_passed` | Expected close date is before the brief's date | Confirm a new close date with the deal owner |
 | 2 | `overdue_activity` | An open activity is past its due date (the oldest one is named) | Complete the overdue activity "…" |
 | 3 | `no_recent_contact` | No contact recorded, or the last one is 30+ days old | Call or email the main contact |
-| 4 | `fix_record` | No close date, probability 0, or a value that could not be read | Ask the deal owner to update the deal record |
+| 4 | `fix_record` | No close date, probability 0, probability 100 on a deal that is still open, or a value that could not be read | Ask the deal owner to update the deal record |
 | 5 | `proposal_waiting` | Proposal stage with no movement for 14+ days | Follow up on the proposal with the main contact |
 | 6 | `negotiation` | Negotiation stage | Agree the final terms and a signing date |
 | 7 | `keep_moving` | None of the above | Agree the next meeting with the main contact |
 
 Rules 2 and 3 need the account facts (`accounts.py`). Without them those rules don't match; nothing is guessed.
+
+Rule 4's "value that could not be read" never fires for a deal the brief shows, because deals without a readable value are left out of the ranking and listed under data issues. It stays as a guard for direct calls to `suggest()`.
 
 Task 10 judges the deals the brief shows. If none of them has a passed close date on the brief's date, it runs the brief again on the day after the earliest close date among them, so the rule is still tested on the brief's own deals. A close-date step given before that date still counts as wrong.
 

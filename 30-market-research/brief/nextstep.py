@@ -8,7 +8,8 @@ Rules, in order (RULES below is the list the tests and PLAN.md refer to):
   1 close_date_passed   expected close date is before the brief's date
   2 overdue_activity    an open activity on the deal or account is past its due date
   3 no_recent_contact   no contact recorded, or the last one is 30 or more days old
-  4 fix_record          no close date, a probability of 0, or a value the brief could not read
+  4 fix_record          no close date, a probability of 0, a probability of 100 on a deal that is
+                        still open, or a value the brief could not read
   5 proposal_waiting    in the proposal stage with no movement for 14 or more days
   6 negotiation         in the negotiation stage
   7 keep_moving         none of the above
@@ -64,6 +65,11 @@ def suggest(row, facts, as_of):
         missing.append("no expected close date")
     if row.probability is not None and row.probability == 0:
         missing.append("probability is 0")
+    if row.probability is not None and row.probability == 100:
+        # a sure win that was never closed (edge case 14); closed deals returned "not_open" above
+        missing.append("probability is 100 but the deal is still open")
+    # Never true for a deal the brief shows: deals without a readable value are left out of the
+    # ranking (edge case 21). Kept as a guard, because suggest() is also called directly.
     if row.value is None or row.base_value is None:
         missing.append("value not readable")
     if missing:

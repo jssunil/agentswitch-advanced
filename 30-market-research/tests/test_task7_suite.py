@@ -230,7 +230,8 @@ class AccountFacts(unittest.TestCase):
 
 class Suite(unittest.TestCase):
     def test_every_planned_task_is_reported_in_order(self):
-        out = suite.run_suite(client(), "keystone", AS_OF)
+        with mock.patch.dict("sys.modules", {"brief.tasks_deals": None}):   # as before tasks 1-6 existed
+            out = suite.run_suite(client(), "keystone", AS_OF)
         self.assertEqual([t["id"] for t in out["tasks"]], [f"keystone:{t}" for t in suite.PLANNED])
         missing = [t for t in out["tasks"][:6]]
         for t in missing:

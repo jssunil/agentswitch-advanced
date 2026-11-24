@@ -117,7 +117,7 @@ python3 -m unittest discover -s tests -t .
 ```
 
 ## Selection rules (`deals.py`, checked by tasks 1–6)
-Agreed in Sunil's review (24 Nov) where marked; the rest is proposed and waits for his OK. Tasks 1–6 recount these from raw records, so `deals.py` must follow them exactly:
+Agreed in Sunil's review (24 Nov) where marked. `deals.py` follows every row as written, including the left-out, test-data and group rows Sunil added on 24 Nov. Tasks 1–6 recount these from raw records, so `deals.py` must follow them exactly:
 
 | Rule | |
 |---|---|
@@ -125,9 +125,11 @@ Agreed in Sunil's review (24 Nov) where marked; the rest is proposed and waits f
 | Value ≤ 0 | Judged on `value`, the deal's own amount: left out and counted under data issues (task 5). A positive `value` with no usable `base_value` is a currency issue (task 4) |
 | One list per company | Ranked within one company and base currency, never across (instructor answer 5) |
 | Rank | `base_value`, largest first |
-| Tie-break | Deal id **as text**, ascending (`D-10` before `D-9`). Agreed in Sunil's review. The brief says when more deals share the value at the cut-off |
+| Tie-break | Deal id **as text**, ascending (`D-10` before `D-9`). Agreed in Sunil's review. The brief says when more deals share the value at the cut-off (`deals.tied_beyond()`) |
 | Fewer than 10 | Show every eligible deal and say "only N eligible deals"; task 1 compares with the recount's top min(10, N) |
-| Test data | Ranked and flagged as "looks like test data", never hidden (instructor answer 6). The exact rule: to be written here by Sunil |
+| Left out, one reason each | A deal that isn't closed is ranked or left out with exactly one reason, checked in this order: unknown stage, value missing or unreadable, value ≤ 0, no usable base value or currency (`currency`, `base_currency` or `base_value` missing, or `base_value` ≤ 0). So a zero-value deal in an unknown currency counts once, under value. Closed deals carry no data issues |
+| Test data | Ranked and flagged as "looks like test data" (`fixture_flag`), never hidden (instructor answer 6). Judged on the title alone (trimmed, any letter case), first match wins: **test marker**, the word `test` not inside another word (`[team99-test …]`); **probe prefix**, `T<digits>-` at the start (`T9-probe-…`); **generated suffix**, ` — ` or ` - ` then exactly 8 hex characters at the end (`Acme Ltd — 1a2b3c4d`); **generated title**, `Deal from <uuid>` and nothing else. Duplicate titles aren't a rule of their own: the repeated titles seen so far already end in a generated suffix |
+| Groups | With more than one company or base currency, one list each, ordered by company id then base currency (as text); `top(ranked, n)` takes the first n of each |
 | No account, or one we can't see | `facts()` returns `name None`, the other account fields `None`, `redacted []`, and a data issue "account: not found" |
 
 `data_issues` in `build()` is the issue list from `open_deals()` (it already carries the `rows.py` issues) plus "account: not found" from `facts()`, each as `{deal_id, issue}`.

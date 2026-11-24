@@ -30,7 +30,7 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-from .rows import from_dict, to_dict
+from .rows import from_dict, stage_usable, to_dict
 from .values import business_date
 
 FORMAT = 1
@@ -262,7 +262,7 @@ def _drop_reason(old, everything):
         return "no longer in the CRM (deleted, or not visible to this seat)"
     if now.stage in CLOSED:
         return CLOSED[now.stage]
-    if not now.stage_known:
+    if not stage_usable(now):             # a deal with no usable pipeline is open and ranked (OBS-30-001)
         return "stage not recognised"
     if not _same(old.base_value, now.base_value):
         if _rate_only(old, now):

@@ -100,8 +100,9 @@ def suggest(row, facts, as_of):
 
 
 def _overdue_activity(activities, as_of):
-    """(id, subject, due date) of the oldest overdue open activity, or None. The subject is
-    record text: control and invisible characters removed, one line, at most SUBJECT_MAX."""
+    """(id, subject, due date) of the oldest overdue open activity, or None. The id is text, or
+    None when the activity has none (never the text "None"). The subject is record text: control
+    and invisible characters removed, one line, at most SUBJECT_MAX."""
     oldest = None
     for a in activities or ():
         if not isinstance(a, dict):
@@ -111,10 +112,12 @@ def _overdue_activity(activities, as_of):
             continue
         subject = display_text(a.get("subject") or "untitled").replace("\n", " ").strip()
         subject = subject if len(subject) <= SUBJECT_MAX else subject[:SUBJECT_MAX - 1] + "…"
-        key = (due, str(a.get("id")))
+        raw_id = a.get("id")
+        activity_id = None if raw_id in (None, "") else str(raw_id)
+        key = (due, activity_id or "")           # ties: id as text; a missing id sorts first
         if oldest is None or key < oldest[0]:
-            oldest = (key, subject, due)
-    return None if oldest is None else (oldest[0][1], oldest[1], oldest[2])
+            oldest = (key, activity_id, subject, due)
+    return None if oldest is None else oldest[1:]
 
 
 def _out(rule, step, reason):

@@ -139,6 +139,24 @@ class EnteredAndDropped(Base):
         self.assertEqual(out["dropped"][0]["reason"], "outranked by other deals")
 
 
+    def test_no_usable_pipeline_is_outranked_not_unknown(self):
+        # Sunil's review, point 1: a deal with no pipeline, or a pipeline that doesn't exist, is
+        # open and ranked (OBS-30-001), so when pushed out it is "outranked", not "stage not recognised"
+        for pipeline in (None, "no_such_pipeline"):
+            with self.subTest(pipeline=pipeline):
+                folder = self.folder / f"p-{pipeline}"
+                folder.mkdir()
+                before = rows(deal(2, pipeline=pipeline), deal(1))
+                changes.save_snapshot(before, "keystone", LAST_WEEK, folder)
+                everything = rows(deal(9), deal(2, pipeline=pipeline), deal(1))
+                self.assertFalse(everything[1].stage_known)
+                out = changes.compare(everything[:2], folder, "keystone", TODAY, all_rows=everything, top=2)
+                self.assertEqual(out["dropped"], [{"id": "d01", "title": "Deal 1", "reason": "outranked by other deals"}])
+                out = changes.compare([everything[0], everything[2]], folder, "keystone", TODAY,
+                                      all_rows=everything, top=2)
+                self.assertEqual(out["dropped"], [{"id": "d02", "title": "Deal 2", "reason": "outranked by other deals"}])
+
+
 class WholeRanking(Base):
     """Edge case 7: the snapshot holds every ranked deal, so --top can change between runs."""
     def setUp(self):

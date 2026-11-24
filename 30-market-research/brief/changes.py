@@ -11,7 +11,8 @@ saved value differs from today's value.
 
 A snapshot holds every ranked open deal, not only the ones shown, plus the ids that were shown
 (edge case 7). So a different `--top` next week gives no false "entered" or "dropped", and a
-deal that enters the list still gets its changes. A change in the base value alone, with the
+deal that enters the list still gets its changes. With `top`, last week's list is cut per company
+and base currency, as `deals.top()` cuts this week's. A change in the base value alone, with the
 deal's own value and currency unchanged, is marked as an exchange-rate change (edge case 6).
 
 Folders (edge case 8): the weekly run uses the official `briefs/snapshots/`; a run with
@@ -115,8 +116,9 @@ def compare(rows, folder, instance, as_of, all_rows=None, top=None, since=None):
     only "not in this week's list".
 
     `top` is this run's --top. With it, last week's list is recomputed from the saved ranking as
-    its first `top` deals, so a different --top gives no false entered or dropped deals. Without
-    it, last week's list is the deals it showed. `since` (a date before `as_of`) compares with the snapshot of exactly that
+    the first `top` deals of each company and base currency, as deals.top() shows them (one
+    list per company, instructor answer 5), so a different --top gives no false entered or
+    dropped deals. Without it, last week's list is the deals it showed. `since` (a date before `as_of`) compares with the snapshot of exactly that
     day, and raises NoSnapshot if there is none; without it, the latest snapshot before `as_of`.
 
     Returns {baseline, previous_date, per_deal {deal id: [{field, before, after, cause?}]},
@@ -140,8 +142,8 @@ def compare(rows, folder, instance, as_of, all_rows=None, top=None, since=None):
     elif top is None:                     # last week's list as it was shown
         shown_set = set(shown_ids)
         last_list = [r for r in before_rows if r.id in shown_set]
-    else:                                 # last week's ranking, cut to this run's --top
-        last_list = before_rows[:top]
+    else:                                 # last week's ranking, cut to this run's --top per group
+        last_list = first_per_group(before_rows, top)
 
     per_deal = {}
     for row in rows:
@@ -157,6 +159,19 @@ def compare(rows, folder, instance, as_of, all_rows=None, top=None, since=None):
                for old in last_list if old.id not in now]
     return {"baseline": False, "previous_date": previous_date.isoformat(), "per_deal": per_deal,
             "entered": entered, "dropped": dropped}
+
+
+def first_per_group(ranked, n):
+    """The first n deals of each (company, base currency) group, in the order given. The same
+    cut as deals.top(), so last week's list is compared like for like (Sunil's review, point 2)."""
+    seen = {}
+    out = []
+    for r in ranked:
+        key = (r.company_id, r.base_currency)
+        if seen.get(key, 0) < n:
+            seen[key] = seen.get(key, 0) + 1
+            out.append(r)
+    return out
 
 
 def field_changes(old, new, skip=()):

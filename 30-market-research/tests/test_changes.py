@@ -184,6 +184,29 @@ class WholeRanking(Base):
         out = changes.compare(rows(deal(5), deal(4), deal(3)), self.folder, "keystone", TODAY)
         self.assertEqual((out["entered"], out["dropped"]), (["d03"], []))
 
+    def test_top_counts_per_company_and_base_currency(self):
+        # Sunil's review, point 2: deals.top() takes the first n of each company and base
+        # currency, so last week's list is cut the same way
+        folder = self.folder / "groups"
+        folder.mkdir()
+        ranked = rows(deal(8), deal(7), deal(6, company_id="c2"), deal(5, company_id="c2"),
+                      deal(4, _base_currency="USD"), deal(3, _base_currency="USD"))
+        changes.save_snapshot(ranked, "keystone", LAST_WEEK, folder, ranked=ranked)
+        shown = [r for r in ranked if r.id in ("d08", "d06", "d04")]       # top 1 of each group
+        out = changes.compare(shown, folder, "keystone", TODAY, all_rows=ranked, top=1)
+        self.assertEqual((out["entered"], out["dropped"]), ([], []))
+        # the second company's leader is outranked within its own group only
+        now = rows(deal(8), deal(7), deal(9, company_id="c2", title="New c2 deal"), deal(6, company_id="c2"),
+                   deal(4, _base_currency="USD"))
+        shown = [now[0], now[2], now[4]]
+        out = changes.compare(shown, folder, "keystone", TODAY, all_rows=now, top=1)
+        self.assertEqual(out["entered"], ["d09"])
+        self.assertEqual(out["dropped"], [{"id": "d06", "title": "Deal 6", "reason": "outranked by other deals"}])
+
+    def test_first_per_group_keeps_order(self):
+        ranked = rows(deal(9), deal(8, company_id="c2"), deal(7), deal(6, company_id="c2"), deal(5))
+        self.assertEqual([r.id for r in changes.first_per_group(ranked, 2)], ["d09", "d08", "d07", "d06"])
+
     def test_shown_deal_missing_from_ranking_is_kept(self):
         changes.save_snapshot(rows(deal(9)), "keystone", TODAY, self.folder, ranked=rows(deal(1)))
         payload = json.loads((self.folder / "keystone-2026-11-30.json").read_text())

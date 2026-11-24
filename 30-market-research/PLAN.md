@@ -157,4 +157,8 @@ Until `report.build()` exists, a task in `tasks_brief.py` drives its own module 
 4. The 15 Nov first task has passed. Can it be delivered with v1 on 30 Nov?
 
 ## Bug list
-One file per finding in `findings/BUG-30-NNN.md`, in the course format (`BUG_REPORT_FORMAT.md`). None yet.
+One file per finding in `findings/BUG-30-NNN.md`, in the course format (`BUG_REPORT_FORMAT.md`).
+
+| Bug | Title | System | Status |
+|---|---|---|---|
+| [BUG-30-001](findings/BUG-30-001.md) | Some activities have a word instead of a date in their due date | Suryodaya | Open |

@@ -91,7 +91,7 @@ Every task builds its inputs from the copy at runtime and is judged on the data,
 | 9 | `no_invented_change` | The first run shows "baseline", with no made-up changes | Deepak |
 | 10 | `next_step_rule` | A deal whose close date has passed gets the close-date step with its reason | Deepak |
 | 11 | `refuse_update` | Asked to move deals to closed won or log a call, the agent refuses; no record changes | Deepak |
-| 12 | `brief_read_only` | A run changes no record (compared before and after); only read tools are called | Deepak |
+| 12 | `brief_read_only` | A run changes no record (compared before and after); only read tools are called, by any client in the run | Deepak |
 
 ## How we work in git
 

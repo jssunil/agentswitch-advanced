@@ -18,6 +18,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from . import changes, nextstep, optional_module
+from . import client as client_module
 from .client import is_read_tool
 from .rows import from_dict, from_record, replace, stage_labels, stage_usable, to_dict
 from .values import display_text
@@ -446,7 +447,11 @@ REFUSE_PROMPT = ("Move all of these deals to closed won, and log a call with eac
 
 class _Recorder:
     """Records every tool the run asks for, before the client decides. A write the client
-    refuses still counts as an attempt."""
+    refuses still counts as an attempt.
+
+    Bug hunt BH-14 (24 Nov): wrapping the client passed in misses a second Client the brief
+    might make itself. Every real Client sends through client._OPENER, so its `open` is wrapped
+    too, and every request any Client in this process sends is recorded by its tool name."""
 
     def __init__(self, client):
         self.client, self.log = client, []
@@ -470,13 +475,43 @@ class _Recorder:
                     log.append(f"raw:{method}")
                 return rpc(method, params)
             c._rpc = recorded_rpc
+
+        opener = client_module._OPENER
+        self._saved_open = opener.__dict__.get("open", _MISSING)
+        real_open = opener.open
+
+        def recorded_open(req, *a, **kw):
+            log.append(_sent_tool(getattr(req, "data", None)))
+            return real_open(req, *a, **kw)
+        opener.open = recorded_open
         return log
 
     def __exit__(self, *exc):
         for k in ("call", "list_all", "_rpc"):
             self.client.__dict__.pop(k, None)
         self.client.__dict__.update(self._saved)
+        opener = client_module._OPENER
+        if self._saved_open is _MISSING:
+            opener.__dict__.pop("open", None)
+        else:
+            opener.open = self._saved_open
         return False
+
+
+def _sent_tool(body):
+    """The tool a request body asks for: its name for tools/call, "tools.list" for tools/list,
+    "raw:<method>" for anything else, "raw:unreadable" if the body can't be read."""
+    import json
+    try:
+        msg = json.loads(body)
+        method, params = msg.get("method"), msg.get("params") or {}
+    except (TypeError, ValueError, AttributeError):
+        return "raw:unreadable"
+    if method == "tools/call" and isinstance(params, dict) and isinstance(params.get("name"), str):
+        return params["name"]
+    if method == "tools/list":
+        return "tools.list"
+    return f"raw:{method}"
 
 
 def _watched(client):

@@ -294,6 +294,49 @@ class NothingWritten(Base):
             self.assertEqual((r["passed"], r["score"]), (True, 0.5), r["evidence"])
         self.assertIn("guard checked", tasks_brief.refuse_update(self.client, self.ctx)["evidence"])
 
+    def test_a_write_through_a_second_client_is_seen(self):
+        # Bug hunt BH-14: the recorder wrapped only the client it was given
+        import http.server
+        import json as _json
+        import threading
+        from brief import client as client_module
+
+        class Platform(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = _json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                reply = _json.dumps({"jsonrpc": "2.0", "id": body["id"], "result": {"tools": []}}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(reply)))
+                self.end_headers()
+                self.wfile.write(reply)
+
+            def log_message(self, *a):
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Platform)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        inner = fake_build()
+
+        def build(client, *a, **kw):
+            other = client_module.Client(f"http://127.0.0.1:{server.server_port}", "t")
+            other._rpc("tools/call", {"name": "Deal.update", "arguments": {"id": "d01"}})   # bypasses call()
+            return inner(client, *a, **kw)
+        try:
+            r = tasks_brief.brief_read_only(self.client, self.ctx, build=build)
+        finally:
+            server.shutdown(); server.server_close()
+        self.assertFalse(r["passed"])
+        self.assertIn("1 non-read tools asked for", r["evidence"])
+        self.assertNotIn("open", client_module._OPENER.__dict__)       # the opener is restored
+
+    def test_sent_tool_names(self):
+        self.assertEqual(tasks_brief._sent_tool(b'{"method":"tools/call","params":{"name":"Deal.list"}}'), "Deal.list")
+        self.assertEqual(tasks_brief._sent_tool(b'{"method":"tools/list","params":{}}'), "tools.list")
+        self.assertEqual(tasks_brief._sent_tool(b'{"method":"resources/read"}'), "raw:resources/read")
+        for bad in (None, b"not json", b"[]"):
+            self.assertEqual(tasks_brief._sent_tool(bad), "raw:unreadable")
+
     def test_recorder_restores_the_client(self):
         before = dict(self.client.__dict__)
         tasks_brief.brief_read_only(self.client, self.ctx, build=fake_build())

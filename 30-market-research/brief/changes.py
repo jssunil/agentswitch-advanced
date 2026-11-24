@@ -132,7 +132,7 @@ def compare(rows, folder, instance, as_of, all_rows=None, top=None, since=None):
         else _latest(folder, instance, day)
     if previous is None:
         return {"baseline": True, "previous_date": None, "per_deal": {}, "entered": [], "dropped": []}
-    previous_date, before_rows, shown_ids = previous
+    previous_date, before_rows, shown_ids, unsaved = previous
     before = {r.id: r for r in before_rows}
     now = {r.id: r for r in rows}
     if shown_ids is None:                 # a snapshot holding only the shown deals
@@ -147,7 +147,7 @@ def compare(rows, folder, instance, as_of, all_rows=None, top=None, since=None):
     for row in rows:
         old = before.get(row.id)
         if old is not None:
-            diffs = field_changes(old, row)
+            diffs = field_changes(old, row, skip=unsaved)
             if diffs:
                 per_deal[row.id] = diffs
     last_ids = {r.id for r in last_list}
@@ -159,12 +159,16 @@ def compare(rows, folder, instance, as_of, all_rows=None, top=None, since=None):
             "entered": entered, "dropped": dropped}
 
 
-def field_changes(old, new):
+def field_changes(old, new, skip=()):
     """[{field, before, after}] for every tracked field whose value differs, in TRACKED order.
-    Money is compared as a number, so 1250000.5 and 1250000.50 are the same value."""
+    Money is compared as a number, so 1250000.5 and 1250000.50 are the same value. Fields in
+    `skip` (tracked fields an older snapshot never saved) are not compared: their saved value
+    is unknown, not empty (edge case 5)."""
     changes = []
     before, after = to_dict(old), to_dict(new)
     for name in TRACKED:
+        if name in skip:
+            continue
         if not _same(getattr(old, name), getattr(new, name)):
             change = {"field": name, "before": before[name], "after": after[name]}
             if name == "base_value" and _rate_only(old, new):
@@ -187,7 +191,7 @@ def latest_before(folder, instance, as_of):
 
 
 def _snapshot_on(folder, instance, as_of, since):
-    """(date, rows, shown ids or None) of the snapshot dated exactly `since`."""
+    """(date, rows, shown ids or None, unsaved tracked fields) of the snapshot dated exactly `since`."""
     instance = _instance(instance)
     if since >= as_of:
         raise ValueError("--since must be a date before the brief's date")
@@ -198,7 +202,8 @@ def _snapshot_on(folder, instance, as_of, since):
 
 
 def _latest(folder, instance, as_of):
-    """(date, rows, shown ids or None) of the latest snapshot dated before `as_of`, or None."""
+    """(date, rows, shown ids or None, unsaved tracked fields) of the latest snapshot dated before
+    `as_of`, or None."""
     instance, day = _instance(instance), _day(as_of)
     folder = Path(folder)
     if not folder.is_dir():
@@ -235,12 +240,16 @@ def _load(path, instance, snap_day):
             raise ValueError("rows must be a list")
         rows = [from_dict(r) for r in payload["rows"]]
         _unique(rows)
+        # A DealRow field added after this file was written loads as None (edge case 5). If that
+        # field is tracked, its old value is unknown, so compare() must not report it as changed.
+        unsaved = frozenset(name for name in TRACKED
+                            if any(isinstance(r, dict) and name not in r for r in payload["rows"]))
         shown = payload.get("shown")
         if shown is not None:
             if not isinstance(shown, list) or not all(isinstance(i, str) for i in shown) \
                     or len(set(shown)) != len(shown) or not set(shown) <= {r.id for r in rows}:
                 raise ValueError("shown must list ids of saved deals, once each")
-        return rows, shown
+        return rows, shown, unsaved
     except (OSError, ValueError, TypeError, AttributeError) as e:
         raise SnapshotError(f"{path.name}: cannot read the snapshot ({e})") from None
 

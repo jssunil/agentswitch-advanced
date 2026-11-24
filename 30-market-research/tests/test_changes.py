@@ -244,6 +244,47 @@ class Files(Base):
             with self.assertRaises(changes.SnapshotError, msg=content):
                 changes.compare(rows(deal(1)), self.folder, "keystone", TODAY)
 
+    def _rewrite_rows(self, path, change):
+        payload = json.loads(path.read_text())
+        for r in payload["rows"]:
+            change(r)
+        path.write_text(json.dumps(payload))
+
+    def test_older_snapshot_without_new_fields_still_loads(self):
+        # edge case 5: a DealRow field added after the file was written loads as None
+        path = changes.save_snapshot(rows(deal(1), deal(2)), "keystone", LAST_WEEK, self.folder)
+        self._rewrite_rows(path, lambda r: (r.pop("rot_level"), r.pop("fixture_flag")))
+        day, loaded = changes.latest_before(self.folder, "keystone", TODAY)
+        self.assertEqual((day, loaded[0].rot_level), (LAST_WEEK, None))
+        out = changes.compare(rows(deal(1), deal(2)), self.folder, "keystone", TODAY)
+        self.assertEqual((out["per_deal"], out["entered"], out["dropped"]), ({}, [], []))
+
+    def test_tracked_field_missing_from_older_snapshot_is_not_a_change(self):
+        # a tracked field the old file never saved is unknown, not empty: no false change
+        path = changes.save_snapshot(rows(deal(1, stage="new")), "keystone", LAST_WEEK, self.folder)
+        self._rewrite_rows(path, lambda r: r.pop("probability"))
+        out = changes.compare(rows(deal(1)), self.folder, "keystone", TODAY)
+        self.assertEqual([c["field"] for c in out["per_deal"]["d01"]], ["stage"])
+
+    def test_saved_none_is_still_a_change(self):
+        # a field the old file saved as empty is known to have been empty
+        changes.save_snapshot(rows(deal(1, probability=None)), "keystone", LAST_WEEK, self.folder)
+        out = changes.compare(rows(deal(1)), self.folder, "keystone", TODAY)
+        self.assertEqual(out["per_deal"]["d01"], [{"field": "probability", "before": None, "after": "40.0"}])
+
+    def test_newer_snapshot_with_extra_fields_still_loads(self):
+        path = changes.save_snapshot(rows(deal(1)), "keystone", LAST_WEEK, self.folder)
+        self._rewrite_rows(path, lambda r: r.update(field_from_a_later_version="x"))
+        self.assertEqual(changes.compare(rows(deal(1)), self.folder, "keystone", TODAY)["per_deal"], {})
+
+    def test_snapshot_without_format_stops_the_run(self):
+        path = changes.save_snapshot(rows(deal(1)), "keystone", LAST_WEEK, self.folder)
+        payload = json.loads(path.read_text())
+        del payload["format"]
+        path.write_text(json.dumps(payload))
+        with self.assertRaises(changes.SnapshotError):
+            changes.compare(rows(deal(1)), self.folder, "keystone", TODAY)
+
     def test_symlinked_snapshot_is_refused(self):
         target = self.folder / "elsewhere.json"
         target.write_text("{}")

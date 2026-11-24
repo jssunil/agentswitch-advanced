@@ -35,7 +35,7 @@ Platform detail (hostnames, record counts, exact requests and replies) is kept o
 | Part | What it does | Owner |
 |---|---|---|
 | `brief/client.py` | Read-only MCP client: read allowlist, strict paging, bounded retries | Deepak |
-| `brief/rows.py` | The deal row both halves share (frozen 24 Nov) | Deepak |
+| `brief/rows.py` | The deal row both halves share (its fields are fixed) | Deepak |
 | `brief/deals.py` | Open deals only; rank by value in the base currency; fixed tie-break; data issues (unknown stage or currency, value ≤ 0); fixture flag | Sunil |
 | `brief/accounts.py` | Account facts per deal: account, contacts, other open deals, last contact, open activities, pinned note. Deal-linked records first, then the account's. Redacted fields shown as "not available to this seat" | Sunil |
 | `brief/changes.py` | What changed. The platform keeps no deal history, so each run saves a snapshot and compares with the previous one. The first run is marked "baseline", and nothing is invented | Deepak |
@@ -53,9 +53,9 @@ Platform detail (hostnames, record counts, exact requests and replies) is kept o
 
 Task 7 (`account_facts`) is written by Deepak, so the account facts are recounted by someone who did not write `accounts.py`.
 
-## Interfaces (frozen 24 Nov 2026)
+## Interfaces (freeze pending Sunil's confirmation)
 
-The two halves are built in parallel, so these are fixed now. Changing one needs agreement from both.
+The two halves are built in parallel, so these are fixed once both agree. Updated 24 Nov after Sunil's review (snapshot interface 4, command line 7, next step 5, `stage_usable()` in 1); the freeze takes effect when Sunil confirms them. After that, changing one needs agreement from both.
 
 1. **Deal row**: `brief/rows.py`, `DealRow` and `FIELDS` (the test `test_frozen_field_list` guards it). Build rows with `from_record(record, stage_labels(pipelines))`. Save and load with `to_dict` / `from_dict` (exact money as decimal text). `fixture_flag` is set only by `deals.py`, using `replace()`. **Open or closed** is judged with `rows.stage_usable(row)`: a stage of the deal's own pipeline, or the stage key when the deal has no usable pipeline (none, issue "pipeline: missing…", or one that doesn't exist, issue "pipeline: not found…"; OBS-30-001). A stage that isn't in a pipeline that does exist is an unknown stage (task 3). `deals.py` and tasks 2–3 use the same helper.
 2. **Ranking** (`deals.py`): `open_deals(rows) -> (ranked: list[DealRow], issues: list[{"deal_id", "issue"}])`, `top(ranked, n=10)`.
@@ -99,10 +99,10 @@ Every task builds its inputs from the copy at runtime and is judged on the data,
 
 | PR | Branch | Commits | Opened | Reviewer → merges |
 |---|---|---|---|---|
-| 1 | `seat30/deepak-v1` | `.gitignore` → setup (`PLAN.md`, `client.py`, `rows.py`) → `changes.py` + tasks 8–9 → `nextstep.py` + tasks 10–12 → `suite.py` + task 7 | 27 Nov | Sunil reviews → instructor merges, by 28 Nov |
+| 1 | `seat30/deepak-v1` | `.gitignore` → setup (`PLAN.md`, `client.py`, `rows.py`) → `changes.py` + tasks 8–9 → `nextstep.py` + tasks 10–12 → `suite.py` + task 7 → fixes → findings (BUG-30-001, OBS-30-001) → changes from Sunil's review: account facts rules, snapshots, rule 4, missing pipelines, KBNote in tasks 11–12, rule 5 on hold, fixed rule 2 wording | 27 Nov | Sunil reviews → instructor merges, by 28 Nov |
 | 2 | `seat30/sunil-v1` | `deals.py` + tasks 1–6 → `accounts.py` → `report.py`, `__main__.py`, `--prompt` | 28 Nov, after PR 1 merges | Deepak reviews → instructor merges, by 29 Nov |
 
-- Sunil cherry-picks the two setup commits from `seat30/deepak-v1` and builds on them. He never branches from it. After PR 1 merges, `git rebase upstream/main` drops them from his branch.
+- Sunil cherry-picks every commit on `seat30/deepak-v1` (setup and later fixes) and builds on them. He never branches from it. After PR 1 merges, `git rebase upstream/main` drops them from his branch.
 - Before either PR opens (27 Nov), both branches are merged into a local branch that is never pushed. The full suite runs there on both systems, and every fix goes on the owner's own branch.
 - Before a PR: `git fetch upstream && git rebase upstream/main`, run the tests, check `git diff --cached`, then `git push --force-with-lease`. No push after approval.
 - A third PR is only for a defect found on `main` on 29–30 Nov that would fail the suite, and only after both agree.
@@ -114,6 +114,22 @@ From `30-market-research/`:
 ```
 python3 -m unittest discover -s tests -t .
 ```
+
+## Selection rules (`deals.py`, checked by tasks 1–6)
+Agreed in Sunil's review (24 Nov) where marked; the rest is proposed and waits for his OK. Tasks 1–6 recount these from raw records, so `deals.py` must follow them exactly:
+
+| Rule | |
+|---|---|
+| Open | `rows.stage_usable(row)` and the stage is not `closed_won` / `closed_lost`. Closed means exactly those two keys |
+| Value ≤ 0 | Judged on `value`, the deal's own amount: left out and counted under data issues (task 5). A positive `value` with no usable `base_value` is a currency issue (task 4) |
+| One list per company | Ranked within one company and base currency, never across (instructor answer 5) |
+| Rank | `base_value`, largest first |
+| Tie-break | Deal id **as text**, ascending (`D-10` before `D-9`). Agreed in Sunil's review. The brief says when more deals share the value at the cut-off |
+| Fewer than 10 | Show every eligible deal and say "only N eligible deals"; task 1 compares with the recount's top min(10, N) |
+| Test data | Ranked and flagged as "looks like test data", never hidden (instructor answer 6). The exact rule: to be written here by Sunil |
+| No account, or one we can't see | `facts()` returns `name None`, the other account fields `None`, `redacted []`, and a data issue "account: not found" |
+
+`data_issues` in `build()` is the issue list from `open_deals()` (it already carries the `rows.py` issues) plus "account: not found" from `facts()`, each as `{deal_id, issue}`.
 
 ## Account facts rules (`accounts.py`, checked by task 7)
 Task 7 recounts these from raw records, so `facts()` must follow them exactly:
@@ -176,7 +192,7 @@ Until `report.build()` exists, a task in `tasks_brief.py` drives its own module 
 12. **Reader:** a sales manager; a weekly run on demand. The 20 Dec copy starts fresh, so that run is a baseline.
 13. **Market part:** after v1. Knowledgebase first, then the platform's read-only web search tool, with a source for every claim. The instructor announces when it is on.
 
-Still open: whether some activity data on one system is intended (see BUG-30-001), and whether the platform's days-in-stage counter resets on a stage change.
+Asked 24 Nov, still open: whether some activity data on one system is intended (see BUG-30-001); whether the platform's days-in-stage counter resets on a stage change (rule 5 is on hold until then); whether a read-only seat's login should have create and update tools for accounts (our client refuses them either way); and who submits the 30 Nov harness run.
 
 ## Bug list
 One file per finding in `findings/BUG-30-NNN.md`, in the course format (`BUG_REPORT_FORMAT.md`).

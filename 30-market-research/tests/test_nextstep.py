@@ -160,6 +160,14 @@ class Rules(unittest.TestCase):
         two_lines = long_label.__class__(**{**long_label.__dict__, "stage_label": "Pro\nposal"})
         self.assertIn("In proposal;", self.rule(two_lines)["reason"])
 
+    def test_activity_subject_is_one_line(self):
+        # Bug hunt BH-06: \r, NEL and U+2028/2029 came back as they were.
+        for s in ("a\rb", "a\u2028b", "a\u2029b", "a\x85b", "a \r\n\t b", "a\nb"):
+            out = self.rule(row(), {"open_activities": [{"id": "x", "subject": s, "due_date": "2026-11-01"}]})
+            self.assertEqual(out["activity"]["subject"], "a b", repr(s))
+        out = self.rule(row(), {"open_activities": [{"id": "x", "subject": "\r\n", "due_date": "2026-11-01"}]})
+        self.assertEqual(out["activity"]["subject"], "untitled")
+
     def test_date_as_text_and_bad_date(self):
         self.assertEqual(nextstep.suggest(row(), RECENT, "2026-11-23"), nextstep.suggest(row(), RECENT, TODAY))
         with self.assertRaises(ValueError):

@@ -117,7 +117,9 @@ def _overdue_activity(activities, as_of):
         due = _safe_day(a.get("due_date"))
         if due is None or due >= as_of:
             continue
-        subject = display_text(a.get("subject") or "untitled").replace("\n", " ").strip()
+        # Bug hunt BH-06: every Unicode line break and run of spaces becomes one space (\r, NEL,
+        # U+2028/2029 too; display_text keeps them for callers to handle).
+        subject = " ".join(display_text(a.get("subject") or "untitled").split()) or "untitled"
         subject = subject if len(subject) <= SUBJECT_MAX else subject[:SUBJECT_MAX - 1] + "…"
         raw_id = a.get("id")
         activity_id = None if raw_id in (None, "") else str(raw_id)

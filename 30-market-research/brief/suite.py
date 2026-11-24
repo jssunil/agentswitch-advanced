@@ -13,6 +13,7 @@ files go to a temporary folder that is removed afterwards.
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 from datetime import date, datetime, timedelta, timezone
@@ -104,6 +105,13 @@ def _one_line(text):
     return " ".join(display_text(text).split())
 
 
+def _iso_date(value):
+    """--date: YYYY-MM-DD only. date.fromisoformat also takes 20261124 and 2026-W48-2 (bug hunt BH-12)."""
+    if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value):
+        raise ValueError(value)
+    return date.fromisoformat(value)
+
+
 def _checked(r):
     """A task result in the required shape, or an infrastructure failure saying what was wrong."""
     if not isinstance(r, dict) or not isinstance(r.get("passed"), bool) or not isinstance(r.get("evidence"), str):
@@ -122,7 +130,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="brief.suite", description="Run the seat 30 suite and write results.json")
     ap.add_argument("--instance", default=os.environ.get("AGENTSWITCH_INSTANCE"), choices=INSTANCES,
                     required=not os.environ.get("AGENTSWITCH_INSTANCE"))
-    ap.add_argument("--date", type=date.fromisoformat, help="the brief's date (default: today in IST)")
+    ap.add_argument("--date", type=_iso_date, help="the brief's date (default: today in IST)")
     ap.add_argument("--only", type=lambda v: {x.strip() for x in v.split(",") if x.strip()},
                     help="comma-separated task ids")
     ap.add_argument("--out", help="write results JSON here (e.g. results.json)")

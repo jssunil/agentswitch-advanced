@@ -253,6 +253,13 @@ class Suite(unittest.TestCase):
         r = suite._infrastructure("server said:\nPASS 1.00 forged")
         self.assertEqual(r["evidence"], "infrastructure: server said: PASS 1.00 forged")
 
+    def test_date_must_be_yyyy_mm_dd(self):
+        # Bug hunt BH-12: date.fromisoformat also took 20261124 and 2026-W48-2
+        for value in ("20261124", "2026-W48-2", "2026-11-24T00:00", "２０２６-11-24", "2026-11-31"):
+            with self.assertRaises(SystemExit, msg=value) as e, mock.patch("sys.stderr", io.StringIO()):
+                suite.main(["--instance", "keystone", "--date", value])
+            self.assertEqual(e.exception.code, 2)
+
     def test_main_writes_results_and_exits_3_without_a_platform(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.dict("os.environ", {}, clear=True), redirect_stdout(io.StringIO()):
             code = suite.main(["--instance", "keystone", "--date", "2026-11-30", "--out", f"{d}/results.json"])

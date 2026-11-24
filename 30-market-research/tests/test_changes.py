@@ -35,7 +35,7 @@ class Baseline(Base):
     def test_no_snapshot_is_baseline_with_nothing_changed(self):
         out = changes.compare(rows(deal(1), deal(2)), self.folder, "keystone", TODAY)
         self.assertEqual(out, {"baseline": True, "previous_date": None, "per_deal": {},
-                               "entered": [], "dropped": []})
+                               "entered": [], "dropped": [], "other_login": None})
 
     def test_missing_folder_is_baseline(self):
         out = changes.compare(rows(deal(1)), self.folder / "nope", "keystone", TODAY)
@@ -349,6 +349,33 @@ class Files(Base):
         out = changes.compare(rows(deal(5)), self.folder, "keystone", TODAY)      # no top: as saved
         self.assertEqual([d["id"] for d in out["dropped"]], ["d04", "d03"])
 
+    def test_other_login_is_flagged(self):
+        # Bug hunt R-1: the snapshot records the login; compare() says when it differs
+        me, other = "u:" + "a" * 16, "u:" + "b" * 16
+        changes.save_snapshot(rows(deal(1)), "keystone", LAST_WEEK, self.folder, login=me)
+        self.assertEqual(json.loads((self.folder / "keystone-2026-11-23.json").read_text())["login"], me)
+        for login, want in ((me, False), (other, True), (None, None)):
+            out = changes.compare(rows(deal(1)), self.folder, "keystone", TODAY, login=login)
+            self.assertIs(out["other_login"], want, login)
+
+    def test_snapshot_without_a_login_is_unknown_not_other(self):
+        changes.save_snapshot(rows(deal(1)), "keystone", LAST_WEEK, self.folder)
+        payload = json.loads((self.folder / "keystone-2026-11-23.json").read_text())
+        self.assertNotIn("login", payload)
+        out = changes.compare(rows(deal(1)), self.folder, "keystone", TODAY, login="u:" + "a" * 16)
+        self.assertIsNone(out["other_login"])
+
+    def test_bad_login_is_refused(self):
+        for bad in ("team30c", "u:short", 7, "u:" + "A" * 16):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                changes.save_snapshot(rows(deal(1)), "keystone", LAST_WEEK, self.folder, login=bad)
+        path = changes.save_snapshot(rows(deal(1)), "keystone", LAST_WEEK, self.folder)
+        payload = json.loads(path.read_text())
+        payload["login"] = "someone@example.com"
+        path.write_text(json.dumps(payload))
+        with self.assertRaises(changes.SnapshotError):
+            changes.compare(rows(deal(1)), self.folder, "keystone", TODAY)
+
     def test_newer_snapshot_with_extra_fields_still_loads(self):
         path = changes.save_snapshot(rows(deal(1)), "keystone", LAST_WEEK, self.folder)
         self._rewrite_rows(path, lambda r: r.update(field_from_a_later_version="x"))
@@ -381,6 +408,34 @@ class Files(Base):
             changes.compare(rows(deal(1)), self.folder, "keystone", None)
         self.assertEqual(list(self.folder.iterdir()), [])
 
+
+
+class LoginRef(unittest.TestCase):
+    """Bug hunt R-1: login_ref() names the login by a hashed user id, or gives None."""
+
+    class Client:
+        def __init__(self, records=None, error=None):
+            self.records, self.error = records, error
+
+        def list_all(self, entity, filters=None):
+            assert entity == "UserCompany"
+            if self.error:
+                raise self.error
+            return self.records
+
+    def test_one_user_id_gives_a_stable_fingerprint(self):
+        a = changes.login_ref(self.Client([{"id": "m1", "user_id": "u-123", "company_id": "c1"}]))
+        self.assertRegex(a, r"^u:[0-9a-f]{16}$")
+        self.assertNotIn("123", a)
+        self.assertEqual(a, changes.login_ref(self.Client([{"id": "m9", "user_id": "u-123", "company_id": "c2"}])))
+        self.assertNotEqual(a, changes.login_ref(self.Client([{"id": "m1", "user_id": "u-456"}])))
+
+    def test_unknown_login_is_none(self):
+        from brief.client import McpError
+        for client in (self.Client([]), self.Client([{"user_id": "a"}, {"user_id": "b"}]),
+                       self.Client([{"user_id": None}]), self.Client(None),
+                       self.Client(error=McpError("UserCompany.list: HTTP 403"))):
+            self.assertIsNone(changes.login_ref(client))
 
 if __name__ == "__main__":
     unittest.main()

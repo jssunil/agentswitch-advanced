@@ -23,6 +23,7 @@ also refuses a snapshot dated after today (`save_snapshot(..., not_after=today)`
 Snapshots hold customer data (deal titles, accounts). They belong in the gitignored
 `briefs/` folder and are written with owner-only permissions.
 """
+import hashlib
 import json
 import os
 import re
@@ -53,6 +54,7 @@ TEST_FOLDER = SEAT_FOLDER / "briefs" / "test-snapshots"
 
 CLOSED = {"closed_won": "closed won", "closed_lost": "closed lost"}
 
+_LOGIN = re.compile(r"u:[0-9a-f]{16}\Z")
 _INSTANCE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 _NAME = re.compile(r"(?P<instance>[a-z0-9][a-z0-9_-]{0,63})-(?P<day>\d{4}-\d{2}-\d{2})\.json\Z")
 
@@ -74,14 +76,35 @@ def snapshot_folder(snapshots=None, date_given=False, prompt=None):
     return TEST_FOLDER if date_given or prompt else OFFICIAL_FOLDER
 
 
-def save_snapshot(rows, instance, as_of, folder, ranked=None, not_after=None):
+def login_ref(client):
+    """A short fingerprint of the login `client` reads as, or None when it can't be told.
+
+    Bug hunt R-1 (24 Nov): a snapshot taken by one login and compared by another could show
+    changes that are only a difference in what the two logins can see. UserCompany.list (a read)
+    returns this login's own company membership; its user id, hashed, names the login without
+    storing it. Never stops the brief: any failure, or not exactly one user id, gives None."""
+    try:
+        records = client.list_all("UserCompany")
+    except Exception:
+        return None
+    ids = {json.dumps(r.get("user_id"), sort_keys=True) for r in records or ()
+           if isinstance(r, dict) and r.get("user_id") not in (None, "")}
+    if len(ids) != 1:
+        return None
+    return "u:" + hashlib.sha256(ids.pop().encode("utf-8")).hexdigest()[:16]
+
+
+def save_snapshot(rows, instance, as_of, folder, ranked=None, not_after=None, login=None):
     """Save this run and return the file's path.
 
     `rows` are the deals the brief shows, in rank order. `ranked` (optional) is every ranked open
     deal, in rank order; it is what the file holds, so next week can recompute its own top N.
     A shown deal missing from `ranked` is added after it. `not_after` (a date, optional) refuses
-    a snapshot dated later; the command line passes today for the official folder."""
+    a snapshot dated later; the command line passes today for the official folder. `login`
+    (optional, from login_ref()) records which login took the snapshot."""
     instance, day = _instance(instance), _day(as_of)
+    if login is not None and not (isinstance(login, str) and _LOGIN.fullmatch(login)):
+        raise ValueError("login must come from login_ref()")
     rows = list(rows)
     _unique(rows)
     if not_after is not None and day > _day(not_after):
@@ -98,6 +121,8 @@ def save_snapshot(rows, instance, as_of, folder, ranked=None, not_after=None):
         raise SnapshotError(f"{target.name}: a snapshot must not be a symlink")
     payload = {"format": FORMAT, "instance": instance, "date": day.isoformat(),
                "rows": [to_dict(r) for r in stored], "shown": [r.id for r in rows]}
+    if login is not None:
+        payload["login"] = login
     fd, temporary = tempfile.mkstemp(prefix=".snapshot-", suffix=".json", dir=folder)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:   # mkstemp creates the file with mode 0600
@@ -110,7 +135,7 @@ def save_snapshot(rows, instance, as_of, folder, ranked=None, not_after=None):
     return target
 
 
-def compare(rows, folder, instance, as_of, all_rows=None, top=None, since=None):
+def compare(rows, folder, instance, as_of, all_rows=None, top=None, since=None, login=None):
     """Compare this run's deals with an earlier snapshot.
 
     `rows` are the deals the brief shows now. `all_rows` (optional) are every deal read this
@@ -125,9 +150,14 @@ def compare(rows, folder, instance, as_of, all_rows=None, top=None, since=None):
     dropped deals. Without it, last week's list is the deals it showed. `since` (a date before `as_of`) compares with the snapshot of exactly that
     day, and raises NoSnapshot if there is none; without it, the latest snapshot before `as_of`.
 
+    `login` (optional, from login_ref()) is this run's login. `other_login` in the result is True
+    when the earlier snapshot was taken by a different login, False when by the same one, and
+    None when either is unknown (no login given, or an older snapshot that didn't record one).
+    When True, the brief says so: two logins may see different values (R-1).
+
     Returns {baseline, previous_date, per_deal {deal id: [{field, before, after, cause?}]},
-    entered [deal ids], dropped [{id, title, reason}]}. per_deal only has deals with changes.
-    A change in the base value alone carries cause "exchange rate".
+    entered [deal ids], dropped [{id, title, reason}], other_login}. per_deal only has deals with
+    changes. A change in the base value alone carries cause "exchange rate".
     """
     instance, day = _instance(instance), _day(as_of)
     rows = list(rows)
@@ -137,8 +167,9 @@ def compare(rows, folder, instance, as_of, all_rows=None, top=None, since=None):
     previous = _snapshot_on(folder, instance, day, _day(since)) if since is not None \
         else _latest(folder, instance, day)
     if previous is None:
-        return {"baseline": True, "previous_date": None, "per_deal": {}, "entered": [], "dropped": []}
-    previous_date, before_rows, shown_ids, unsaved = previous
+        return {"baseline": True, "previous_date": None, "per_deal": {}, "entered": [], "dropped": [],
+                "other_login": None}
+    previous_date, before_rows, shown_ids, unsaved, before_login = previous
     before = {r.id: r for r in before_rows}
     now = {r.id: r for r in rows}
     if shown_ids is None:                 # a snapshot holding only the shown deals
@@ -162,8 +193,9 @@ def compare(rows, folder, instance, as_of, all_rows=None, top=None, since=None):
     everything = {r.id: r for r in all_rows} if all_rows is not None else None
     dropped = [{"id": old.id, "title": old.title, "reason": _drop_reason(old, everything)}
                for old in last_list if old.id not in now]
+    other_login = None if login is None or before_login is None else login != before_login
     return {"baseline": False, "previous_date": previous_date.isoformat(), "per_deal": per_deal,
-            "entered": entered, "dropped": dropped}
+            "entered": entered, "dropped": dropped, "other_login": other_login}
 
 
 def first_per_group(ranked, n):
@@ -211,7 +243,8 @@ def latest_before(folder, instance, as_of):
 
 
 def _snapshot_on(folder, instance, as_of, since):
-    """(date, rows, shown ids or None, unsaved tracked fields) of the snapshot dated exactly `since`."""
+    """(date, rows, shown ids or None, unsaved tracked fields, login or None) of the snapshot dated
+    exactly `since`."""
     instance = _instance(instance)
     if since >= as_of:
         raise ValueError("--since must be a date before the brief's date")
@@ -222,8 +255,8 @@ def _snapshot_on(folder, instance, as_of, since):
 
 
 def _latest(folder, instance, as_of):
-    """(date, rows, shown ids or None, unsaved tracked fields) of the latest snapshot dated before
-    `as_of`, or None."""
+    """(date, rows, shown ids or None, unsaved tracked fields, login or None) of the latest snapshot
+    dated before `as_of`, or None."""
     instance, day = _instance(instance), _day(as_of)
     folder = Path(folder)
     if not folder.is_dir():
@@ -269,7 +302,10 @@ def _load(path, instance, snap_day):
             if not isinstance(shown, list) or not all(isinstance(i, str) for i in shown) \
                     or len(set(shown)) != len(shown) or not set(shown) <= {r.id for r in rows}:
                 raise ValueError("shown must list ids of saved deals, once each")
-        return rows, shown, unsaved
+        login = payload.get("login")
+        if login is not None and not (isinstance(login, str) and _LOGIN.fullmatch(login)):
+            raise ValueError("login is not a login fingerprint")
+        return rows, shown, unsaved, login
     except (OSError, ValueError, TypeError, AttributeError) as e:
         raise SnapshotError(f"{path.name}: cannot read the snapshot ({e})") from None
 

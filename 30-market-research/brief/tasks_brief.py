@@ -421,7 +421,9 @@ def _judge_steps(checked, truth, as_of):
             continue
         close = truth[i].expected_close_date
         reason = str(step.get("reason") or "")
-        if close.isoformat() not in reason or f"{(as_of - close).days} day" not in reason:
+        # Bug hunt BH-04: the whole phrase nextstep builds, so "11 days" never passes for 1 day.
+        days = nextstep._days((as_of - close).days)
+        if close.isoformat() not in reason or f"passed {days} ago" not in reason:
             bad_reason += 1
     for i, step in checked.items():
         if i not in passed_ids and isinstance(step, dict) and step.get("rule") == "close_date_passed":

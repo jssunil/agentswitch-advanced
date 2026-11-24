@@ -11,7 +11,9 @@ from brief import changes, nextstep, tasks_brief
 from brief.client import WriteBlocked
 from brief.rows import from_record, stage_labels, to_dict
 
-from tests.fakes import FakeClient, deal
+from tests.fakes import PIPELINES, FakeClient, deal
+
+LABELS_FOR_JUDGE = stage_labels(PIPELINES)
 
 
 def fake_build(invent=False, hide=False, always_baseline=False, step=None, write=False, sneak=False,
@@ -193,6 +195,18 @@ class NextStepRule(Base):
         r = tasks_brief.next_step_rule(self.client, self.ctx, build=fake_build(step=step))
         self.assertFalse(r["passed"])
         self.assertIn("reason_without_date=2", r["evidence"])
+
+    def test_wrong_day_count_that_contains_the_right_one_fails(self):
+        # Bug hunt BH-04: "11 days" passed for 1 day, and "121 days" would pass for 21.
+        as_of = date(2026, 11, 30)
+        truth = {"d01": from_record(deal(1, expected_close_date="2026-11-29"), LABELS_FOR_JUDGE),
+                 "d02": from_record(deal(2, expected_close_date="2026-11-09"), LABELS_FOR_JUDGE)}
+        wrong = {"d01": "Expected close 2026-11-29 passed 11 days ago",
+                 "d02": "Expected close 2026-11-09 passed 121 days ago"}
+        steps = {i: {"rule": "close_date_passed", "step": "x", "reason": r} for i, r in wrong.items()}
+        self.assertEqual(tasks_brief._judge_steps(steps, truth, as_of)["bad_reason"], 2)
+        right = {i: nextstep.suggest(row, None, as_of) for i, row in truth.items()}
+        self.assertEqual(tasks_brief._judge_steps(right, truth, as_of)["bad_reason"], 0)
 
     def test_close_date_step_on_a_future_deal_scores_zero(self):
         def step(row):

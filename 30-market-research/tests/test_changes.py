@@ -265,10 +265,23 @@ class SinceAndFolders(Base):
         changes.save_snapshot(rows(deal(1)), "keystone", TODAY, self.folder, not_after=TODAY)
 
     def test_folder_rule(self):
-        self.assertEqual(changes.snapshot_folder(), Path("briefs/snapshots"))
-        self.assertEqual(changes.snapshot_folder(date_given=True), Path("briefs/test-snapshots"))
-        self.assertEqual(changes.snapshot_folder(prompt="close them"), Path("briefs/test-snapshots"))
-        self.assertEqual(changes.snapshot_folder("x/y", date_given=True), Path("x/y"))
+        seat = Path(changes.__file__).resolve().parent.parent
+        self.assertEqual(changes.snapshot_folder(), seat / "briefs/snapshots")
+        self.assertEqual(changes.snapshot_folder(date_given=True), seat / "briefs/test-snapshots")
+        self.assertEqual(changes.snapshot_folder(prompt="close them"), seat / "briefs/test-snapshots")
+        self.assertEqual(changes.snapshot_folder("x/y", date_given=True), Path("x/y"))   # given: as given
+
+    def test_default_folders_do_not_depend_on_the_working_directory(self):
+        # Bug hunt BH-07: run from the repo root, the snapshots went to an untracked briefs/ there.
+        seat = Path(changes.__file__).resolve().parent.parent
+        here = os.getcwd()
+        try:
+            os.chdir(self.folder)
+            for folder in (changes.snapshot_folder(), changes.snapshot_folder(date_given=True)):
+                self.assertTrue(folder.is_absolute())
+                self.assertEqual(folder.parent.parent, seat)
+        finally:
+            os.chdir(here)
 
 
 class Files(Base):

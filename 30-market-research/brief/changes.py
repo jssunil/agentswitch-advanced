@@ -45,8 +45,11 @@ TRACKED = ("title", "account", "owner", "pipeline", "stage", "value", "currency"
            "base_value", "base_currency", "probability", "expected_close_date")
 
 EXCHANGE_RATE = "exchange rate"
-OFFICIAL_FOLDER = Path("briefs") / "snapshots"
-TEST_FOLDER = Path("briefs") / "test-snapshots"
+# Bug hunt BH-07 (24 Nov): anchored to the seat folder, not the working directory, so a run
+# started elsewhere (e.g. the repo root) never writes customer data into an untracked briefs/.
+SEAT_FOLDER = Path(__file__).resolve().parent.parent
+OFFICIAL_FOLDER = SEAT_FOLDER / "briefs" / "snapshots"
+TEST_FOLDER = SEAT_FOLDER / "briefs" / "test-snapshots"
 
 CLOSED = {"closed_won": "closed won", "closed_lost": "closed lost"}
 

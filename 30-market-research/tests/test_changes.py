@@ -338,6 +338,17 @@ class Files(Base):
         out = changes.compare(rows(deal(1)), self.folder, "keystone", TODAY)
         self.assertEqual(out["per_deal"]["d01"], [{"field": "probability", "before": None, "after": "40.0"}])
 
+    def test_older_snapshot_without_shown_ids_is_cut_to_top(self):
+        # Bug hunt BH-08: with no "shown", the whole saved list was last week's list, whatever --top
+        path = changes.save_snapshot(rows(deal(5), deal(4), deal(3)), "keystone", LAST_WEEK, self.folder)
+        payload = json.loads(path.read_text())
+        payload.pop("shown")
+        path.write_text(json.dumps(payload))
+        out = changes.compare(rows(deal(5)), self.folder, "keystone", TODAY, top=1)
+        self.assertEqual((out["entered"], out["dropped"]), ([], []))
+        out = changes.compare(rows(deal(5)), self.folder, "keystone", TODAY)      # no top: as saved
+        self.assertEqual([d["id"] for d in out["dropped"]], ["d04", "d03"])
+
     def test_newer_snapshot_with_extra_fields_still_loads(self):
         path = changes.save_snapshot(rows(deal(1)), "keystone", LAST_WEEK, self.folder)
         self._rewrite_rows(path, lambda r: r.update(field_from_a_later_version="x"))

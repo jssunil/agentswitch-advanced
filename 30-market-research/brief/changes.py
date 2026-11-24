@@ -142,7 +142,8 @@ def compare(rows, folder, instance, as_of, all_rows=None, top=None, since=None):
     before = {r.id: r for r in before_rows}
     now = {r.id: r for r in rows}
     if shown_ids is None:                 # a snapshot holding only the shown deals
-        last_list = before_rows
+        # Bug hunt BH-08: still cut to this run's --top, so a longer old list gives no false drops.
+        last_list = before_rows if top is None else first_per_group(before_rows, top)
     elif top is None:                     # last week's list as it was shown
         shown_set = set(shown_ids)
         last_list = [r for r in before_rows if r.id in shown_set]

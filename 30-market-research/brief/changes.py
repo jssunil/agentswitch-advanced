@@ -9,6 +9,16 @@ With no earlier snapshot the run is a baseline, and nothing is reported as chang
 module never infers a change from timestamps or guesses one: a change is a field whose
 saved value differs from today's value.
 
+A snapshot holds every ranked open deal, not only the ones shown, plus the ids that were shown
+(edge case 7). So a different `--top` next week gives no false "entered" or "dropped", and a
+deal that enters the list still gets its changes. A change in the base value alone, with the
+deal's own value and currency unchanged, is marked as an exchange-rate change (edge case 6).
+
+Folders (edge case 8): the weekly run uses the official `briefs/snapshots/`; a run with
+`--date` or `--prompt` uses `briefs/test-snapshots/` unless a folder is given, so a test run
+never becomes the comparison point for a real one (`snapshot_folder`). The official folder
+also refuses a snapshot dated after today (`save_snapshot(..., not_after=today)`).
+
 Snapshots hold customer data (deal titles, accounts). They belong in the gitignored
 `briefs/` folder and are written with owner-only permissions.
 """
@@ -27,9 +37,15 @@ FORMAT = 1
 
 # Fields a reader cares about. Left out on purpose: updated_at/updated_by (they move with any
 # edit and say nothing on their own), rot_days and rot_level (they grow every day by themselves),
-# issues and fixture_flag (the brief's own labels, not the deal's).
-TRACKED = ("title", "account", "owner", "pipeline", "stage", "stage_label", "value", "currency",
+# issues and fixture_flag (the brief's own labels, not the deal's), and stage_label: a renamed
+# label in the pipeline is not a change to the deal, and a change of stage shows in `stage`
+# (edge case 22).
+TRACKED = ("title", "account", "owner", "pipeline", "stage", "value", "currency",
            "base_value", "base_currency", "probability", "expected_close_date")
+
+EXCHANGE_RATE = "exchange rate"
+OFFICIAL_FOLDER = Path("briefs") / "snapshots"
+TEST_FOLDER = Path("briefs") / "test-snapshots"
 
 CLOSED = {"closed_won": "closed won", "closed_lost": "closed lost"}
 
@@ -41,18 +57,43 @@ class SnapshotError(Exception):
     """A saved snapshot cannot be read. The brief stops rather than compare against a guess."""
 
 
-def save_snapshot(rows, instance, as_of, folder):
-    """Save `rows` (the deals the brief shows, in rank order) and return the file's path."""
+class NoSnapshot(LookupError):
+    """`--since` names a date with no snapshot. The brief stops (exit 2) and never picks
+    another week instead."""
+
+
+def snapshot_folder(snapshots=None, date_given=False, prompt=None):
+    """The folder a run reads and writes snapshots in: the one given, else the test folder for
+    a run with --date or --prompt, else the official weekly folder."""
+    if snapshots:
+        return Path(snapshots)
+    return TEST_FOLDER if date_given or prompt else OFFICIAL_FOLDER
+
+
+def save_snapshot(rows, instance, as_of, folder, ranked=None, not_after=None):
+    """Save this run and return the file's path.
+
+    `rows` are the deals the brief shows, in rank order. `ranked` (optional) is every ranked open
+    deal, in rank order; it is what the file holds, so next week can recompute its own top N.
+    A shown deal missing from `ranked` is added after it. `not_after` (a date, optional) refuses
+    a snapshot dated later; the command line passes today for the official folder."""
     instance, day = _instance(instance), _day(as_of)
     rows = list(rows)
     _unique(rows)
+    if not_after is not None and day > _day(not_after):
+        raise SnapshotError(f"refusing a snapshot dated {day.isoformat()}, after "
+                            f"{_day(not_after).isoformat()}, in this folder")
+    stored = list(ranked) if ranked is not None else list(rows)
+    _unique(stored)
+    known = {r.id for r in stored}
+    stored += [r for r in rows if r.id not in known]
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / f"{instance}-{day.isoformat()}.json"
     if target.is_symlink():
         raise SnapshotError(f"{target.name}: a snapshot must not be a symlink")
     payload = {"format": FORMAT, "instance": instance, "date": day.isoformat(),
-               "rows": [to_dict(r) for r in rows]}
+               "rows": [to_dict(r) for r in stored], "shown": [r.id for r in rows]}
     fd, temporary = tempfile.mkstemp(prefix=".snapshot-", suffix=".json", dir=folder)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:   # mkstemp creates the file with mode 0600
@@ -65,26 +106,42 @@ def save_snapshot(rows, instance, as_of, folder):
     return target
 
 
-def compare(rows, folder, instance, as_of, all_rows=None):
-    """Compare this run's deals with the latest earlier snapshot.
+def compare(rows, folder, instance, as_of, all_rows=None, top=None, since=None):
+    """Compare this run's deals with an earlier snapshot.
 
     `rows` are the deals the brief shows now. `all_rows` (optional) are every deal read this
     run. With them, a deal that left the list gets a reason: closed won or lost, stage not
-    recognised, value changed, or outranked. Without them the reason is only "not in this
-    week's list".
+    recognised, value changed, an exchange-rate change, or outranked. Without them the reason is
+    only "not in this week's list".
 
-    Returns {baseline, previous_date, per_deal {deal id: [{field, before, after}]},
+    `top` is this run's --top. With it, last week's list is recomputed from the saved ranking as
+    its first `top` deals, so a different --top gives no false entered or dropped deals. Without
+    it, last week's list is the deals it showed. `since` (a date before `as_of`) compares with the snapshot of exactly that
+    day, and raises NoSnapshot if there is none; without it, the latest snapshot before `as_of`.
+
+    Returns {baseline, previous_date, per_deal {deal id: [{field, before, after, cause?}]},
     entered [deal ids], dropped [{id, title, reason}]}. per_deal only has deals with changes.
+    A change in the base value alone carries cause "exchange rate".
     """
     instance, day = _instance(instance), _day(as_of)
     rows = list(rows)
     _unique(rows)
-    previous = latest_before(folder, instance, day)
+    if top is not None and (isinstance(top, bool) or not isinstance(top, int) or top < 1):
+        raise ValueError("top must be a positive whole number")
+    previous = _snapshot_on(folder, instance, day, _day(since)) if since is not None \
+        else _latest(folder, instance, day)
     if previous is None:
         return {"baseline": True, "previous_date": None, "per_deal": {}, "entered": [], "dropped": []}
-    previous_date, before_rows = previous
+    previous_date, before_rows, shown_ids = previous
     before = {r.id: r for r in before_rows}
     now = {r.id: r for r in rows}
+    if shown_ids is None:                 # a snapshot holding only the shown deals
+        last_list = before_rows
+    elif top is None:                     # last week's list as it was shown
+        shown_set = set(shown_ids)
+        last_list = [r for r in before_rows if r.id in shown_set]
+    else:                                 # last week's ranking, cut to this run's --top
+        last_list = before_rows[:top]
 
     per_deal = {}
     for row in rows:
@@ -93,10 +150,11 @@ def compare(rows, folder, instance, as_of, all_rows=None):
             diffs = field_changes(old, row)
             if diffs:
                 per_deal[row.id] = diffs
-    entered = [r.id for r in rows if r.id not in before]
+    last_ids = {r.id for r in last_list}
+    entered = [r.id for r in rows if r.id not in last_ids]
     everything = {r.id: r for r in all_rows} if all_rows is not None else None
     dropped = [{"id": old.id, "title": old.title, "reason": _drop_reason(old, everything)}
-               for old in before_rows if old.id not in now]
+               for old in last_list if old.id not in now]
     return {"baseline": False, "previous_date": previous_date.isoformat(), "per_deal": per_deal,
             "entered": entered, "dropped": dropped}
 
@@ -108,12 +166,39 @@ def field_changes(old, new):
     before, after = to_dict(old), to_dict(new)
     for name in TRACKED:
         if not _same(getattr(old, name), getattr(new, name)):
-            changes.append({"field": name, "before": before[name], "after": after[name]})
+            change = {"field": name, "before": before[name], "after": after[name]}
+            if name == "base_value" and _rate_only(old, new):
+                change["cause"] = EXCHANGE_RATE
+            changes.append(change)
     return changes
+
+
+def _rate_only(old, new):
+    """The base value moved while the deal's own value and currency (and the base currency)
+    stayed the same: only the exchange rate changed."""
+    return (old.value is not None and _same(old.value, new.value) and old.currency == new.currency
+            and old.base_currency == new.base_currency and not _same(old.base_value, new.base_value))
 
 
 def latest_before(folder, instance, as_of):
     """(date, rows) of the latest snapshot for `instance` dated before `as_of`, or None."""
+    found = _latest(folder, instance, as_of)
+    return None if found is None else found[:2]
+
+
+def _snapshot_on(folder, instance, as_of, since):
+    """(date, rows, shown ids or None) of the snapshot dated exactly `since`."""
+    instance = _instance(instance)
+    if since >= as_of:
+        raise ValueError("--since must be a date before the brief's date")
+    path = Path(folder) / f"{instance}-{since.isoformat()}.json"
+    if not path.exists() and not path.is_symlink():
+        raise NoSnapshot(f"no {instance} snapshot dated {since.isoformat()} in {folder}")
+    return (since, *_load(path, instance, since))
+
+
+def _latest(folder, instance, as_of):
+    """(date, rows, shown ids or None) of the latest snapshot dated before `as_of`, or None."""
     instance, day = _instance(instance), _day(as_of)
     folder = Path(folder)
     if not folder.is_dir():
@@ -132,7 +217,7 @@ def latest_before(folder, instance, as_of):
     if not dated:
         return None
     snap_day, path = max(dated)
-    return snap_day, _load(path, instance, snap_day)
+    return (snap_day, *_load(path, instance, snap_day))
 
 
 def _load(path, instance, snap_day):
@@ -150,7 +235,12 @@ def _load(path, instance, snap_day):
             raise ValueError("rows must be a list")
         rows = [from_dict(r) for r in payload["rows"]]
         _unique(rows)
-        return rows
+        shown = payload.get("shown")
+        if shown is not None:
+            if not isinstance(shown, list) or not all(isinstance(i, str) for i in shown) \
+                    or len(set(shown)) != len(shown) or not set(shown) <= {r.id for r in rows}:
+                raise ValueError("shown must list ids of saved deals, once each")
+        return rows, shown
     except (OSError, ValueError, TypeError, AttributeError) as e:
         raise SnapshotError(f"{path.name}: cannot read the snapshot ({e})") from None
 
@@ -166,6 +256,8 @@ def _drop_reason(old, everything):
     if not now.stage_known:
         return "stage not recognised"
     if not _same(old.base_value, now.base_value):
+        if _rate_only(old, now):
+            return "outranked after an exchange-rate change"
         return "value changed"
     return "outranked by other deals"
 

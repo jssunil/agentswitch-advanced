@@ -14,7 +14,8 @@ from brief.rows import from_record, stage_labels, to_dict
 from tests.fakes import FakeClient, deal
 
 
-def fake_build(invent=False, hide=False, always_baseline=False, step=None, write=False, sneak=False):
+def fake_build(invent=False, hide=False, always_baseline=False, step=None, write=False, sneak=False,
+               rate_label=False):
     def build(client, instance, as_of, top=10, since=None, prompt=None, snapshots=None):
         if write and prompt:
             try:
@@ -25,12 +26,15 @@ def fake_build(invent=False, hide=False, always_baseline=False, step=None, write
             client.deals[0]["stage"] = "closed_won"     # a change made without asking for a tool
         labels = stage_labels(client.list_all("Pipeline"))
         rows = [from_record(r, labels) for r in client.list_all("Deal")]
-        shown = sorted(rows, key=lambda r: r.base_value, reverse=True)[:top]
-        result = changes.compare(shown, snapshots, instance, as_of)
-        changes.save_snapshot(shown, instance, as_of, snapshots)
+        ranked = sorted(rows, key=lambda r: r.base_value, reverse=True)
+        shown = ranked[:top]
+        result = changes.compare(shown, snapshots, instance, as_of, all_rows=rows, top=top, since=since)
+        changes.save_snapshot(shown, instance, as_of, snapshots, ranked=ranked)
         deals = []
         for rank, r in enumerate(shown, 1):
             found = [] if hide else result["per_deal"].get(r.id, [])
+            if rate_label:
+                found = [dict(c, cause="exchange rate") if c["field"] == "base_value" else c for c in found]
             if invent and rank == len(shown):
                 found = [{"field": "probability", "before": "99", "after": str(r.probability)}]
             ns = step(r) if step else nextstep.suggest(r, None, as_of)
@@ -65,6 +69,11 @@ class WhatChanged(Base):
         r = tasks_brief.what_changed(self.client, self.ctx, build=fake_build(hide=True))
         self.assertFalse(r["passed"])
         self.assertIn("seeded stage change not reported", r["evidence"])
+
+    def test_value_change_labelled_as_exchange_rate_fails(self):
+        r = tasks_brief.what_changed(self.client, self.ctx, build=fake_build(rate_label=True))
+        self.assertFalse(r["passed"])
+        self.assertIn("labelled as an exchange-rate change", r["evidence"])
 
     def test_change_on_an_unseeded_deal_fails(self):
         r = tasks_brief.what_changed(self.client, self.ctx, build=fake_build(invent=True))
@@ -137,7 +146,7 @@ class NoInventedChange(Base):
         self.client.on_read = edit_after_first_run
         r = tasks_brief.no_invented_change(self.client, self.ctx, build=fake_build())
         self.assertTrue(r["passed"], r["evidence"])
-        self.assertIn("changed_by_other_logins=2", r["evidence"])   # stage and its label
+        self.assertIn("changed_by_other_logins=1", r["evidence"])   # the stage (its label isn't tracked)
 
     def test_component_mode_is_capped_at_half(self):
         r = tasks_brief.no_invented_change(self.client, self.ctx)

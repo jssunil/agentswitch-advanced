@@ -284,6 +284,9 @@ def what_changed(client, ctx, build=None):
         elif want_value is None or Decimal(value_changes[0]["after"]) != want_value.base_value \
                 or Decimal(value_changes[0]["before"]) != want_value.base_value + SEEDED_DELTA:
             problems.append("value change reported with wrong before/after")
+        elif value_changes[0].get("cause"):
+            # the seeded change moves the deal's own value, so it is not an exchange-rate change
+            problems.append("seeded value change labelled as an exchange-rate change")
 
         others = [i for i, c in found.items() if c and i not in (stage_deal.id, value_deal.id)]
         if others:

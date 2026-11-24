@@ -170,6 +170,10 @@ def to_dict(row):
     return out
 
 
+_SAVED_TEXT = ("company_id", "party_id", "account", "contact_id", "owner", "pipeline", "stage",
+               "stage_label", "currency", "base_currency", "rot_level", "updated_at", "updated_by")
+
+
 def from_dict(data):
     """The inverse of to_dict(), for saved snapshots. Unknown keys are ignored.
     Raises ValueError for a row without an id or title, so a damaged snapshot is never read."""
@@ -177,6 +181,20 @@ def from_dict(data):
             or not isinstance(data.get("title"), str):
         raise ValueError("a saved deal row needs an id and a title")
     values = {name: data.get(name) for name in FIELDS}
+    # Bug hunt BH-09: every other field has the type to_dict() saves, or is missing (None, for a
+    # field added later). Anything else is a damaged snapshot.
+    for name in _SAVED_TEXT:
+        if values[name] is not None and not isinstance(values[name], str):
+            raise ValueError(f"a saved deal row has a {name} that is not text")
+    if values["issues"] is not None and (not isinstance(values["issues"], list)
+                                         or not all(isinstance(i, str) for i in values["issues"])):
+        raise ValueError("a saved deal row has issues that are not a list of text")
+    for name in ("stage_known", "fixture_flag"):
+        if values[name] is not None and not isinstance(values[name], bool):
+            raise ValueError(f"a saved deal row has a {name} that is not true or false")
+    if values["rot_days"] is not None and (isinstance(values["rot_days"], bool)
+                                           or not isinstance(values["rot_days"], int)):
+        raise ValueError("a saved deal row has a rot_days that is not a whole number")
     for name in ("value", "base_value", "probability"):
         values[name] = money(values[name])
     values["expected_close_date"] = business_date(values["expected_close_date"])

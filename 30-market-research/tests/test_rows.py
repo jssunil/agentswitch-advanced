@@ -157,5 +157,19 @@ class DamagedSnapshotRows(unittest.TestCase):
                 from_dict(bad)
 
 
+    def test_fields_of_the_wrong_type_are_refused(self):
+        # Bug hunt BH-09: these loaded as issues=('a','b','c'), stage_known=True, company_id=7
+        good = to_dict(from_record(deal()))
+        for name, bad in (("issues", "abc"), ("issues", [1]), ("stage_known", "false"), ("fixture_flag", 1),
+                          ("company_id", 7), ("stage", ["x"]), ("rot_days", "66"), ("rot_days", True)):
+            with self.assertRaises(ValueError, msg=f"{name}={bad!r}"):
+                from_dict({**good, name: bad})
+
+    def test_missing_or_null_fields_still_load(self):
+        good = to_dict(from_record(deal()))
+        row = from_dict({k: v for k, v in good.items() if k not in ("issues", "stage_known", "rot_days")})
+        self.assertEqual((row.issues, row.stage_known, row.rot_days), ((), False, None))
+        self.assertEqual(from_dict(good), from_record(deal()))
+
 if __name__ == "__main__":
     unittest.main()

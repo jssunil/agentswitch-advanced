@@ -53,6 +53,18 @@ class PlatformUnavailable(McpError):
     """The platform could not be reached or kept failing after the bounded retries."""
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Bug hunt BH-03 (24 Nov): urllib follows a 301/302/303 and copies the Authorization header
+    to the new address, whatever host it names. Redirects are never followed; urllib then raises
+    HTTPError with the redirect's code, and _rpc reports it."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+REDIRECT_STATUS = {301, 302, 303, 307, 308}
+
+
 def is_read_tool(name):
     return name in READ_TOOLS or name.endswith(READ_SUFFIXES)
 
@@ -94,6 +106,9 @@ class Client:
                 status, ctype, raw = self._post(body)
                 break
             except urllib.error.HTTPError as e:
+                if e.code in REDIRECT_STATUS:
+                    raise McpError(f"{what}: HTTP {e.code}, the platform answered with a redirect, which is "
+                                   "not followed so the token is not sent on (check AGENTSWITCH_BASE_URL)") from None
                 if e.code in (401, 403):
                     raise McpError(f"{what}: HTTP {e.code}, the token was rejected (check AGENTSWITCH_TOKEN)") from None
                 reason = f"HTTP {e.code} {e.reason}"
@@ -132,7 +147,7 @@ class Client:
                 "Accept": "application/json, text/event-stream",
             },
         )
-        with urllib.request.urlopen(req, timeout=getattr(self, "_try_timeout", None) or self.timeout) as resp:
+        with _OPENER.open(req, timeout=getattr(self, "_try_timeout", None) or self.timeout) as resp:
             return resp.status, resp.headers.get("Content-Type", ""), resp.read().decode("utf-8", "replace")
 
     def tool_names(self):

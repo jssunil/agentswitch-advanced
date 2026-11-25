@@ -149,5 +149,114 @@ class Debug(unittest.TestCase):
         self.assertNotRegex(err.getvalue(), re.escape("secret-token-123"))
 
 
+# ---------------------------------------------------------------- platform stats and the run record (25 Nov)
+
+import json
+import tempfile
+import urllib.error
+from pathlib import Path
+
+from brief import client as client_module
+
+
+class Flaky(client_module.Client):
+    """Fails `fails` times with HTTP 503, then answers. No network, no real waiting."""
+    def __init__(self, fails=0):
+        super().__init__("http://x", "tok-SECRET-123")
+        self.fails, self._sleep = fails, lambda s: None
+
+    def _post(self, body):
+        if self.fails:
+            self.fails -= 1
+            raise urllib.error.HTTPError("http://x/api/mcp", 503, "Service Unavailable", {}, None)
+        result = {"structuredContent": {"data": [], "total": 0}}
+        return 200, "application/json", json.dumps({"jsonrpc": "2.0", "id": self._id, "result": result})
+
+
+class PlatformStats(unittest.TestCase):
+    def tearDown(self):
+        debug.ENABLED = False
+
+    def test_requests_retries_and_tools_are_counted(self):
+        c = Flaky(fails=2)
+        c.call("Deal.list")
+        c.call("Party.list")
+        s = client_module.stats_of(c)
+        self.assertEqual((s["requests"], s["retries"]), (4, 2))
+        self.assertEqual(s["waited"], 3.0)                         # 1 s, then 2 s
+        self.assertEqual(dict(s["by_tool"]), {"Deal.list": 1, "Party.list": 1})
+
+    def test_debug_names_each_retry_and_a_blocked_write(self):
+        debug.ENABLED = True
+        c, err = Flaky(fails=1), io.StringIO()
+        with redirect_stderr(err):
+            c.call("Deal.list")
+            with self.assertRaises(client_module.WriteBlocked):
+                c.call("Deal.update", {"id": "d01"})
+        self.assertIn("debug: retry 1 of tools/call Deal.list after HTTP 503 Service Unavailable, waiting 1 s",
+                      err.getvalue())
+        self.assertIn("debug: blocked: Deal.update is not a read tool, nothing was sent", err.getvalue())
+        self.assertNotIn("tok-SECRET-123", err.getvalue())
+
+    def test_quiet_without_debug(self):
+        err = io.StringIO()
+        with redirect_stderr(err):
+            Flaky(fails=1).call("Deal.list")
+        self.assertEqual(err.getvalue(), "")
+
+    def test_a_fake_client_without_stats_counts_zero(self):
+        self.assertEqual(client_module.stats_of(FakeClient([]))["requests"], 0)
+        self.assertEqual(client_module.stats_of(None)["requests"], 0)
+
+
+class RunRecord(unittest.TestCase):
+    def tearDown(self):
+        debug.ENABLED = False
+
+    def test_meta_path_sits_beside_results(self):
+        self.assertEqual(suite.meta_path("runs/results.json"), Path("runs/results.meta.json"))
+        self.assertEqual(suite.meta_path("out"), Path("out.meta.json"))
+
+    def test_timings_per_task(self):
+        timings = {}
+        tasks = [("t", "T", lambda c, ctx: {"passed": True, "score": 1.0, "evidence": "ok"}, None)]
+        with mock.patch.object(suite, "all_tasks", lambda: tasks):
+            suite.run_suite(FakeClient([deal(1)]), "keystone", date(2026, 11, 30), timings=timings)
+        self.assertEqual(set(timings), {"keystone:t"})
+        self.assertEqual(set(timings["keystone:t"]), {"seconds", "calls", "retries"})
+
+    def test_main_writes_the_meta_file_without_the_token_and_results_keep_their_shape(self):
+        class Platform(Flaky):
+            def __init__(self):
+                super().__init__(fails=1)
+
+        def only_task(c, ctx):
+            c.call("Deal.list")
+            return {"passed": True, "score": 1.0, "evidence": "ok"}
+        env = {"AGENTSWITCH_BASE_URL": "https://example.invalid", "AGENTSWITCH_TOKEN": "tok-SECRET-123"}
+        err = io.StringIO()
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict("os.environ", env, clear=True), \
+                mock.patch.object(suite, "Client", Platform), \
+                mock.patch.object(suite, "all_tasks", lambda: [("next_step_rule", "T10", only_task, None)]), \
+                mock.patch("sys.stdout", io.StringIO()), redirect_stderr(err):
+            code = suite.main(["--instance", "keystone", "--date", "2026-11-30", "--out", f"{d}/results.json", "--debug"])
+            results = json.loads(Path(d, "results.json").read_text())
+            raw_meta = Path(d, "results.meta.json").read_text()
+        meta = json.loads(raw_meta)
+        self.assertEqual(code, 0)
+        self.assertEqual(set(results), {"tasks", "summary"})        # TASK_FORMAT.md shape, unchanged
+        self.assertEqual(meta["instance"], "keystone")
+        self.assertEqual(meta["tasks"]["keystone:next_step_rule"]["calls"], 1)
+        self.assertEqual(meta["platform"]["retries"], 1)             # the first tools/list was retried
+        self.assertTrue(meta["debug"])
+        for key in ("started", "finished", "seconds", "commit", "login", "python"):
+            self.assertIn(key, meta)
+        self.assertNotIn("tok-SECRET-123", raw_meta)
+        self.assertNotIn("example.invalid", raw_meta)                # no platform address either
+        self.assertIn("debug: platform: ", err.getvalue())
+        self.assertIn("debug: next_step_rule: pass 1.00 in ", err.getvalue())
+        self.assertIn("1 platform calls, 0 retries", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

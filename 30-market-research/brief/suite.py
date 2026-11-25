@@ -10,13 +10,20 @@ results.json is still written (every task an infrastructure failure), and the ex
 --date defaults to today in IST, so a harness run needs no date. Snapshots and other scratch
 files go to a temporary folder that is removed afterwards.
 
---debug prints, on stderr, a line as each task starts and ends (with its time) and the full
-traceback of any crash (brief/debug.py). The evidence lines and results.json don't change.
+--debug prints, on stderr, a line as each task starts and ends (its time, platform calls and
+retries), each retry and slow request, any blocked write, the full traceback of any crash
+(brief/debug.py), and a closing platform summary. The evidence lines and results.json don't change.
+
+With --out, the run is also described in <out>.meta.json beside it (results.meta.json): commit,
+login, start and end, and per task its seconds, platform calls and retries. It is a separate file
+so results.json keeps exactly the TASK_FORMAT.md shape.
 """
 import argparse
 import json
 import os
+import platform
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -24,7 +31,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from . import debug, optional_module
-from .client import EXIT_PLATFORM, Client, McpError
+from .client import EXIT_PLATFORM, Client, McpError, stats_of
 from .values import display_text
 
 # Suite numbers 1-12 (PLAN.md, "v1 suite (30 Nov): tasks").
@@ -61,8 +68,9 @@ def all_tasks():
     return tasks
 
 
-def run_suite(client, instance, as_of, only=None, platform_error=None):
-    """The TASK_FORMAT.md payload. With `platform_error`, nothing runs and every task says why."""
+def run_suite(client, instance, as_of, only=None, platform_error=None, timings=None):
+    """The TASK_FORMAT.md payload. With `platform_error`, nothing runs and every task says why.
+    `timings` (a dict), if given, gets {task id: {seconds, calls, retries}} for each task run."""
     results = []
     with tempfile.TemporaryDirectory(prefix="seat30-suite-") as workdir:
         ctx = {"instance": instance, "as_of": as_of, "workdir": workdir}
@@ -75,7 +83,7 @@ def run_suite(client, instance, as_of, only=None, platform_error=None):
                 r = _infrastructure(missing)
             else:
                 debug.step(f"{task_id}: started")
-                started = time.monotonic()
+                started, before = time.monotonic(), stats_of(client)
                 debug.current = task_id
                 try:
                     r = fn(client, ctx)
@@ -85,11 +93,63 @@ def run_suite(client, instance, as_of, only=None, platform_error=None):
                 finally:
                     debug.current = ""
                 r = _checked(r)
-                debug.step(f"{task_id}: {'pass' if r['passed'] else 'FAIL'} {r['score']:.2f} "
-                           f"in {time.monotonic() - started:.1f} s")
+                used = _used(before, stats_of(client), time.monotonic() - started)
+                if timings is not None:
+                    timings[f"{instance}:{task_id}"] = used
+                debug.step(f"{task_id}: {'pass' if r['passed'] else 'FAIL'} {r['score']:.2f} in {used['seconds']} s, "
+                           f"{used['calls']} platform calls, {used['retries']} retries")
             results.append({"id": f"{instance}:{task_id}", "title": title, **r})
     passed = sum(1 for r in results if r["passed"])
     return {"tasks": results, "summary": f"{instance}: {passed}/{len(results)} tasks passed"}
+
+
+def _used(before, after, seconds):
+    return {"seconds": round(seconds, 1), "calls": after["requests"] - before["requests"],
+            "retries": after["retries"] - before["retries"]}
+
+
+def login_of(client):
+    """A hashed user id, as the snapshots record it (changes.login_ref); None if it can't be told."""
+    if client is None:
+        return None
+    try:
+        from . import changes
+        return changes.login_ref(client)
+    except Exception:                              # a debugging aid never fails the run
+        return None
+
+
+def run_meta(client, instance, as_of, started, finished, timings, platform_error, debug_on, login):
+    """What was run, for <out>.meta.json. Never the token or the platform address."""
+    stats = stats_of(client)
+    return {"instance": instance, "date": as_of.isoformat(),
+            "started": started.isoformat(timespec="seconds"), "finished": finished.isoformat(timespec="seconds"),
+            "seconds": round((finished - started).total_seconds(), 1),
+            "commit": _commit(), "login": login, "platform_error": platform_error, "debug": debug_on,
+            "python": platform.python_version(),
+            "platform": {"requests": stats["requests"], "retries": stats["retries"],
+                         "waited_seconds": round(stats["waited"], 1), "request_seconds": round(stats["seconds"], 1),
+                         "by_tool": dict(sorted(stats["by_tool"].items()))},
+            "tasks": timings}
+
+
+def _commit():
+    """The checked-out commit and whether files were changed, or None where git isn't available."""
+    here = Path(__file__).resolve().parent
+    try:
+        head = subprocess.run(["git", "-C", str(here), "rev-parse", "--short", "HEAD"],
+                              capture_output=True, text=True, timeout=10, check=True).stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(here), "status", "--porcelain", "--untracked-files=no", "--", "."],
+                               capture_output=True, text=True, timeout=10, check=True).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return {"head": head, "changed_files": bool(dirty)}
+
+
+def meta_path(out):
+    """results.json -> results.meta.json, beside it."""
+    out = Path(out)
+    return out.with_name(f"{out.stem}.meta.json" if out.suffix == ".json" else f"{out.name}.meta.json")
 
 
 def write_results(path, payload):
@@ -157,6 +217,7 @@ def main(argv=None):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="replace")
 
+    started = datetime.now(IST)                    # before the first read, so the totals add up
     client, platform_error = None, None
     try:
         client = Client()
@@ -166,9 +227,19 @@ def main(argv=None):
     except McpError as e:
         debug.crash(e, "the first platform read")
         client, platform_error = None, display_text(e)
-    out = run_suite(client, args.instance, args.date or today_ist(), args.only, platform_error)
+    login = login_of(client) if args.out else None
+    as_of, timings = args.date or today_ist(), {}
+    out = run_suite(client, args.instance, as_of, args.only, platform_error, timings)
+    finished = datetime.now(IST)
     if args.out:
         write_results(args.out, out)
+        write_results(meta_path(args.out), run_meta(client, args.instance, as_of, started, finished, timings,
+                                                     platform_error, args.debug, login))
+    s = stats_of(client)
+    debug.step(f"platform: {s['requests']} requests in {s['seconds']:.1f} s, {s['retries']} retries "
+               f"({s['waited']:.0f} s waiting); by tool: "
+               + (", ".join(f"{k} {v}" for k, v in s["by_tool"].most_common(8)) or "none"))
+    debug.step(f"total {(finished - started).total_seconds():.1f} s")
     for r in out["tasks"]:
         print(f"{'PASS' if r['passed'] else 'FAIL'} {r['score']:.2f} {r['id']}: {r['evidence']}")
     print(out["summary"])

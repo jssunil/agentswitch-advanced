@@ -14,7 +14,9 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import Counter
 
+from . import debug
 from .values import display_text, reject_json_constant
 
 READ_SUFFIXES = (".list", ".get")
@@ -30,6 +32,7 @@ RETRY_STATUS = {429, 500, 502, 503, 504}
 RETRY_DELAYS = (1, 2, 4)        # seconds before the 2nd, 3rd and 4th try
 RETRY_AFTER_MAX = 30            # cap on a server's Retry-After
 RETRY_BUDGET = 90               # stop retrying once a request has taken this long in total
+SLOW_REQUEST = 10               # --debug names a request that took longer than this (seconds)
 
 
 class WriteBlocked(Exception):
@@ -65,6 +68,16 @@ _OPENER = urllib.request.build_opener(_NoRedirect)
 REDIRECT_STATUS = {301, 302, 303, 307, 308}
 
 
+def new_stats():
+    return {"requests": 0, "retries": 0, "waited": 0.0, "seconds": 0.0, "by_tool": Counter()}
+
+
+def stats_of(client):
+    """A copy of a client's stats (zeros for a client without them, such as a test fake)."""
+    s = getattr(client, "stats", None) or new_stats()
+    return {**s, "by_tool": Counter(s["by_tool"])}
+
+
 def is_read_tool(name):
     return name in READ_TOOLS or name.endswith(READ_SUFFIXES)
 
@@ -88,6 +101,9 @@ class Client:
         self.timeout = timeout
         self._id = 0
         self._sleep = time.sleep
+        # What this client did, for --debug and the suite's .meta.json: requests sent (retries
+        # included), retries, seconds waited before retries, seconds in requests, calls per tool.
+        self.stats = new_stats()
 
     def _rpc(self, method, params):
         """One JSON-RPC request. Reads are retried after transient failures (D1); every failure
@@ -101,7 +117,10 @@ class Client:
         delays = RETRY_DELAYS if retry else ()
         started = time.monotonic()
         self._try_timeout = None
+        stats = self.__dict__.setdefault("stats", new_stats())
+        stats["by_tool"][name or method] += 1
         for attempt in range(len(delays) + 1):
+            stats["requests"] += 1
             try:
                 status, ctype, raw = self._post(body)
                 break
@@ -125,9 +144,17 @@ class Client:
             left = RETRY_BUDGET - (time.monotonic() - started) - wait
             if attempt == len(delays) or left < 1:
                 tries = attempt + 1
+                stats["seconds"] += time.monotonic() - started
                 raise PlatformUnavailable(f"{what}: {reason}" + (f" after {tries} tries" if tries > 1 else "")) from None
+            debug.step(f"retry {attempt + 1} of {what} after {display_text(reason)}, waiting {wait} s")
+            stats["retries"] += 1
+            stats["waited"] += wait
             self._sleep(wait)
             self._try_timeout = min(self.timeout, left)
+        took = time.monotonic() - started
+        stats["seconds"] += took
+        if took > SLOW_REQUEST:
+            debug.step(f"slow: {what} took {took:.1f} s")
         msg = _response_message(raw, ctype, status, request_id, what)
         if "error" in msg:
             error = msg["error"]
@@ -160,6 +187,7 @@ class Client:
 
     def call(self, name, args=None):
         if not is_read_tool(name):
+            debug.step(f"blocked: {display_text(name)} is not a read tool, nothing was sent")
             raise WriteBlocked(f"{name} is not a read tool; the brief is read-only")
         return tool_result(self._rpc("tools/call", {"name": name, "arguments": args or {}}), name)
 

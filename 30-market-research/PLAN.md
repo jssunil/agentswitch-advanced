@@ -53,9 +53,9 @@ Platform detail (hostnames, record counts, exact requests and replies) is kept o
 
 Task 7 (`account_facts`) is written by Deepak, so the account facts are recounted by someone who did not write `accounts.py`.
 
-## Interfaces (freeze pending Sunil's confirmation)
+## Interfaces (frozen 25 Nov)
 
-The two halves are built in parallel, so these are fixed once both agree. Updated 24 Nov after Sunil's review (snapshot interface 4, command line 7, next step 5, `stage_usable()` in 1); the freeze takes effect when Sunil confirms them. After that, changing one needs agreement from both.
+The two halves are built in parallel, so these are fixed once both agree. Updated 24 Nov after Sunil's review (snapshot interface 4, command line 7, next step 5, `stage_usable()` in 1). **Frozen 25 Nov:** Sunil confirmed them, including point 2 (`top` per company and base currency), R-1 (`login`, `other_login`) and his 25 Nov additions to interface 6, with two changes from Deepak's review of `report.py`: `rank` is the deal's place in its company and base-currency group also when the prompt names deals, and `contacts` is `None` for a missing account. Changing an interface now needs agreement from both.
 
 1. **Deal row**: `brief/rows.py`, `DealRow` and `FIELDS` (the test `test_frozen_field_list` guards it). Build rows with `from_record(record, stage_labels(pipelines))`. Save and load with `to_dict` / `from_dict` (exact money as decimal text). `fixture_flag` is set only by `deals.py`, using `replace()`. **Open or closed** is judged with `rows.stage_usable(row)`: a stage of the deal's own pipeline, or the stage key when the deal has no usable pipeline (none, issue "pipeline: missing…", or one that doesn't exist, issue "pipeline: not found…"; OBS-30-001). A stage that isn't in a pipeline that does exist is an unknown stage (task 3). `deals.py` and tasks 2–3 use the same helper.
 2. **Ranking** (`deals.py`): `open_deals(rows) -> (ranked: list[DealRow], issues: list[{"deal_id", "issue"}])`, `top(ranked, n=10)`.

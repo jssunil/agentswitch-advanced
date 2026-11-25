@@ -171,6 +171,8 @@ class AccountFacts(unittest.TestCase):
             r = self.run_task(wrong(change))
             self.assertFalse(r["passed"], fact)
             self.assertIn("wrong_deals=3", r["evidence"], fact)
+            for deal_id in ("d01", "d02", "d03"):      # which deals, and what was wrong with each
+                self.assertRegex(r["evidence"], rf"{deal_id}\([^)]*{fact}[^)]*\)", fact)   # d03: "redacted name shown"
             self.assertEqual(r["score"], 0.7, fact)
 
     def test_redacted_name_must_not_be_shown(self):

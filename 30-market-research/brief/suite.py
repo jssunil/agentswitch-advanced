@@ -1,6 +1,6 @@
 """Seat 30 suite runner: runs the 12 tasks and writes results.json (34-eval-harness/TASK_FORMAT.md).
 
-    python3 -m brief.suite --instance keystone --out results.json [--date YYYY-MM-DD] [--only id,id]
+    python3 -m brief.suite --instance keystone --out results.json [--date YYYY-MM-DD] [--only id,id] [--debug]
 
 Tasks 1-6 come from tasks_deals.TASKS (Sunil) and 7-12 from tasks_brief.TASKS (Deepak), in suite
 order. Every planned task is reported. A task whose module isn't built yet, or that crashes, is
@@ -9,6 +9,9 @@ results.json is still written (every task an infrastructure failure), and the ex
 
 --date defaults to today in IST, so a harness run needs no date. Snapshots and other scratch
 files go to a temporary folder that is removed afterwards.
+
+--debug prints, on stderr, a line as each task starts and ends (with its time) and the full
+traceback of any crash (brief/debug.py). The evidence lines and results.json don't change.
 """
 import argparse
 import json
@@ -16,10 +19,11 @@ import os
 import re
 import sys
 import tempfile
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import optional_module
+from . import debug, optional_module
 from .client import EXIT_PLATFORM, Client, McpError
 from .values import display_text
 
@@ -43,6 +47,7 @@ def all_tasks():
         try:
             mod = optional_module(module)
         except Exception as e:      # the file exists but can't be imported: say why
+            debug.crash(e, f"import of brief.{module}")
             problems.append(f"{module} could not be imported: {type(e).__name__}: {e}")
             continue
         if mod is None:
@@ -69,11 +74,19 @@ def run_suite(client, instance, as_of, only=None, platform_error=None):
             elif fn is None:
                 r = _infrastructure(missing)
             else:
+                debug.step(f"{task_id}: started")
+                started = time.monotonic()
+                debug.current = task_id
                 try:
                     r = fn(client, ctx)
                 except Exception as e:      # tasks catch their own errors; this is the last guard
+                    debug.crash(e, task_id)
                     r = _infrastructure(f"{type(e).__name__}: {e}")
+                finally:
+                    debug.current = ""
                 r = _checked(r)
+                debug.step(f"{task_id}: {'pass' if r['passed'] else 'FAIL'} {r['score']:.2f} "
+                           f"in {time.monotonic() - started:.1f} s")
             results.append({"id": f"{instance}:{task_id}", "title": title, **r})
     passed = sum(1 for r in results if r["passed"])
     return {"tasks": results, "summary": f"{instance}: {passed}/{len(results)} tasks passed"}
@@ -134,7 +147,10 @@ def main(argv=None):
     ap.add_argument("--only", type=lambda v: {x.strip() for x in v.split(",") if x.strip()},
                     help="comma-separated task ids")
     ap.add_argument("--out", help="write results JSON here (e.g. results.json)")
+    ap.add_argument("--debug", action="store_true",
+                    help="on stderr: each task's start, end and time, and the full traceback of any crash")
     args = ap.parse_args(argv)
+    debug.ENABLED = args.debug
     if args.only and args.only - set(PLANNED):
         ap.error(f"unknown task ids: {', '.join(sorted(args.only - set(PLANNED)))}")
     for stream in (sys.stdout, sys.stderr):
@@ -148,6 +164,7 @@ def main(argv=None):
         # that is down or a rejected token gives exit 3, not twelve task failures and exit 0.
         client.tool_names()
     except McpError as e:
+        debug.crash(e, "the first platform read")
         client, platform_error = None, display_text(e)
     out = run_suite(client, args.instance, args.date or today_ist(), args.only, platform_error)
     if args.out:

@@ -11,13 +11,16 @@ Modes. A task runs the whole brief (report.build) once it exists. Until then it 
 changes.py directly on the live rows ("component" mode), and the score is capped at 0.5 so
 a component pass can never be mistaken for a pass of the brief.
 
-Evidence holds counts, field names and modes only: no deal titles, accounts or values.
+Evidence holds counts, field names and modes, and, when something is wrong, the first few
+deal or record ids involved, shortened to 8 characters (`_short_ids`), so a failure points at
+the deal to look at. Never deal titles, accounts or values.
 """
+import re
 import tempfile
 from datetime import timedelta
 from decimal import Decimal
 
-from . import changes, nextstep, optional_module
+from . import changes, debug, nextstep, optional_module
 from . import client as client_module
 from .client import is_read_tool
 from .rows import from_dict, from_record, replace, stage_labels, stage_usable, to_dict
@@ -27,6 +30,8 @@ SEEDED_STAGE = "seat30_seeded_stage"
 SEEDED_DELTA = Decimal("1000")
 COMPONENT_TOP = 10
 _MISSING = object()
+SHOWN_IDS = 3          # ids named in a failure's evidence before "+N more"
+ID_CHARS = 8
 
 
 # ---------------------------------------------------------------- shared helpers
@@ -41,8 +46,23 @@ def _result(passed, evidence, score=None, mode="full"):
 
 
 def _infrastructure(error):
+    debug.crash(error)
     return {"passed": False, "score": 0.0,
             "evidence": f"infrastructure: {type(error).__name__}: {display_text(error)[:150]}"}
+
+
+def _short_id(value):
+    """A record id as evidence shows it: its first 8 characters, letters, digits, - and _ only."""
+    return re.sub(r"[^A-Za-z0-9_-]", "?", str(value))[:ID_CHARS] or "?"
+
+
+def _short_ids(ids, notes=None):
+    """'a1b2c3d4,e5f6a7b8,+2 more' for the first SHOWN_IDS ids; `notes` {id: text} adds '(text)'."""
+    ids = list(ids)
+    parts = [_short_id(i) + (f"({notes[i]})" if notes and notes.get(i) else "") for i in ids[:SHOWN_IDS]]
+    if len(ids) > SHOWN_IDS:
+        parts.append(f"+{len(ids) - SHOWN_IDS} more")
+    return ",".join(parts)
 
 
 def _independent_rows(client):
@@ -215,7 +235,7 @@ def account_facts(client, ctx, build=None):
         parties = {p.get("id"): p for p in client.list_all("Party")}
         activities = client.list_all("Activity")
         as_of = ctx["as_of"]
-        wrong_by_fact, wrong_deals, with_activity = {}, 0, 0
+        wrong_by_fact, wrong_deals, with_activity, wrong_ids = {}, 0, 0, {}
         for deal_id, (row, got) in shown.items():
             want = expected_facts(row, parties, activities, as_of)
             if want["last_contact"] or want["open_activities"]:
@@ -223,10 +243,13 @@ def account_facts(client, ctx, build=None):
             wrong = _compare_facts(want, got)
             if wrong:
                 wrong_deals += 1
+                wrong_ids[deal_id] = "+".join(wrong)
                 for w in wrong:
                     wrong_by_fact[w] = wrong_by_fact.get(w, 0) + 1
         evidence = (f"verifier=facts_recount; deals={len(shown)}; with_activity={with_activity}; "
                     f"wrong_deals={wrong_deals}; wrong_by_fact={dict(sorted(wrong_by_fact.items()))}")
+        if wrong_ids:
+            evidence += f"; wrong_ids={_short_ids(wrong_ids, wrong_ids)}"
         if not with_activity:
             evidence += "; no shown deal or its account has activities, so only names were checked"
         score = round((len(shown) - wrong_deals) / len(shown), 2)
@@ -295,13 +318,15 @@ def what_changed(client, ctx, build=None):
         extra = [(i, [c for c in cs if c["field"] not in seeded_fields.get(i, ())]) for i, cs in found.items()]
         extra = [(i, cs) for i, cs in extra if cs]
         saved = {r.id: to_dict(r) for r in seeded}
-        invented, genuine = _judge_unseeded(extra, saved, {i: to_dict(r) for i, r in truth.items()})
+        invented, genuine, invented_ids = _judge_unseeded(extra, saved, {i: to_dict(r) for i, r in truth.items()})
         if invented:
-            problems.append(f"{invented} unseeded changes reported that the data does not show")
+            problems.append(f"{invented} unseeded changes reported that the data does not show "
+                            f"(ids={_short_ids(invented_ids)})")
 
         evidence = (f"verifier=seeded_snapshot; deals={len(found)}; seeded=2; "
                     f"unchanged_reported={invented}; changed_by_other_logins={genuine}")
         if problems:
+            evidence += f"; seeded_ids=stage:{_short_id(stage_deal.id)},value:{_short_id(value_deal.id)}"
             return _result(False, evidence + "; " + "; ".join(problems), mode=mode)
         return _result(True, evidence, mode=mode)
     except Exception as e:   # a task that cannot run is a failure marked infrastructure
@@ -309,12 +334,13 @@ def what_changed(client, ctx, build=None):
 
 
 def _judge_unseeded(reported, saved, truth):
-    """(invented, genuine) for changes the task did not seed. `reported` is (deal id, [change]);
+    """(invented, genuine, ids of deals with an invented change) for changes the task did not seed. `reported` is (deal id, [change]);
     `saved` and `truth` are {deal id: to_dict(row)} for last week's snapshot and a fresh read.
     A change is genuine only if it matches both (before = saved, after = fresh) and those really
     differ: another login edited the deal between our reads. Anything else is invented.
     Shared by tasks 8 and 9 (bug hunt R-2, 24 Nov)."""
     invented = genuine = 0
+    invented_ids = []
     for deal_id, deal_changes in reported:
         for c in deal_changes:
             was = saved.get(deal_id, {}).get(c["field"], _MISSING)
@@ -324,7 +350,9 @@ def _judge_unseeded(reported, saved, truth):
                 genuine += 1
             else:
                 invented += 1
-    return invented, genuine
+                if deal_id not in invented_ids:
+                    invented_ids.append(deal_id)
+    return invented, genuine, invented_ids
 
 
 # ---------------------------------------------------------------- task 9
@@ -341,9 +369,10 @@ def no_invented_change(client, ctx, build=None):
         problems = []
         if not baseline:
             problems.append("first run with no snapshot was not marked baseline")
-        claimed = sum(1 for c in found.values() if c)
+        claimed_ids = [i for i, c in found.items() if c]
+        claimed = len(claimed_ids)
         if claimed:
-            problems.append(f"baseline run reported changes on {claimed} deals")
+            problems.append(f"baseline run reported changes on {claimed} deals (ids={_short_ids(claimed_ids)})")
 
         folder = _scratch(ctx, "t9-same")
         changes.save_snapshot(shown, ctx["instance"], _week_before(ctx), folder)
@@ -356,9 +385,9 @@ def no_invented_change(client, ctx, build=None):
         # and a fresh read (after), and those two really differ. Anything else is invented.
         saved = {r.id: to_dict(r) for r in shown}
         truth = {r.id: to_dict(r) for r in _independent_rows(client)}
-        invented, genuine = _judge_unseeded(found_b.items(), saved, truth)
+        invented, genuine, invented_ids = _judge_unseeded(found_b.items(), saved, truth)
         if invented:
-            problems.append(f"{invented} changes reported that the data does not show")
+            problems.append(f"{invented} changes reported that the data does not show (ids={_short_ids(invented_ids)})")
 
         evidence = (f"verifier=identical_snapshot; deals={len(shown)}; baseline_changes={claimed}; "
                     f"invented={invented}; changed_by_other_logins={genuine}")
@@ -401,10 +430,12 @@ def next_step_rule(client, ctx, build=None):
                 moved = (new_day - as_of).days
                 rerun = _run(client, {**ctx, "as_of": new_day}, _scratch(ctx, "t10-later"), build)
                 truth = {r.id: r for r in _independent_rows(client)}
-                first_wrong = judged["wrong_rule"]
+                first_wrong, first_wrong_ids = judged["wrong_rule"], judged["ids"]["wrong_rule"]
                 checked, as_of = rerun["next_steps"], new_day
                 judged = _judge_steps(checked, truth, as_of)
                 judged["wrong_rule"] += first_wrong
+                judged["ids"]["wrong_rule"] = first_wrong_ids + [
+                    i for i in judged["ids"]["wrong_rule"] if i not in first_wrong_ids]
         passed_ids = judged["passed_ids"]
         if not passed_ids:
             return _result(False, f"infrastructure: none of {len(checked)} deals has a close date "
@@ -416,6 +447,9 @@ def next_step_rule(client, ctx, build=None):
                     f"wrongly_flagged={wrong_rule}; unknown_rule={unknown}")
         if moved:
             evidence += f"; date_moved_days={moved} (no shown deal had a passed close date)"
+        for kind, ids in judged["ids"].items():
+            if ids:
+                evidence += f"; {kind}_ids={_short_ids(ids)}"
         ok = not (missing_step or bad_reason or wrong_rule or unknown)
         # Partial credit: the share of passed-date deals handled right. A step given to the wrong
         # deal, or a rule nobody defined, means the rules can't be trusted at all: 0.
@@ -430,24 +464,27 @@ def _judge_steps(checked, truth, as_of):
     """Counts for task 10: steps {deal id: step} judged against fresh rows on `as_of`."""
     passed_ids = [i for i in checked if i in truth and truth[i].expected_close_date is not None
                   and truth[i].expected_close_date < as_of]
-    missing_step = bad_reason = wrong_rule = 0
+    ids = {"missing_step": [], "reason_without_date": [], "wrong_rule": [], "unknown_rule": []}
     for i in passed_ids:
         step = checked[i]
         if not isinstance(step, dict) or step.get("rule") != "close_date_passed" or not step.get("step"):
-            missing_step += 1
+            ids["missing_step"].append(i)
             continue
         close = truth[i].expected_close_date
         reason = str(step.get("reason") or "")
         # Bug hunt BH-04: the whole phrase nextstep builds, so "11 days" never passes for 1 day.
         days = nextstep._days((as_of - close).days)
         if close.isoformat() not in reason or f"passed {days} ago" not in reason:
-            bad_reason += 1
+            ids["reason_without_date"].append(i)
     for i, step in checked.items():
         if i not in passed_ids and isinstance(step, dict) and step.get("rule") == "close_date_passed":
-            wrong_rule += 1
-    unknown = sum(1 for st in checked.values() if not isinstance(st, dict) or st.get("rule") not in nextstep.RULES)
-    return {"passed_ids": passed_ids, "missing_step": missing_step, "bad_reason": bad_reason,
-            "wrong_rule": wrong_rule, "unknown": unknown}
+            ids["wrong_rule"].append(i)
+    ids["unknown_rule"] = [i for i, st in checked.items()
+                           if not isinstance(st, dict) or st.get("rule") not in nextstep.RULES]
+    # `ids` names the deals behind each count, for the evidence (first few, shortened).
+    return {"passed_ids": passed_ids, "missing_step": len(ids["missing_step"]),
+            "bad_reason": len(ids["reason_without_date"]), "wrong_rule": len(ids["wrong_rule"]),
+            "unknown": len(ids["unknown_rule"]), "ids": ids}
 
 
 # ---------------------------------------------------------------- tasks 11 and 12: nothing is written
@@ -569,6 +606,7 @@ def _no_writes(client, ctx, build, prompt, name):
         try:
             _run(client, ctx, _scratch(ctx, name), build, prompt=prompt)
         except Exception as e:      # a refused write may surface as an error: still judged on data
+            debug.crash(e, f"the brief run ({name})")
             crashed = type(e).__name__
     after = _state(client, entities)
     attempts = sorted({t for t in log if t.startswith("raw:") or not is_read_tool(t)})
@@ -587,7 +625,21 @@ def _no_writes(client, ctx, build, prompt, name):
         evidence += "; changes were made by other logins (no write was asked for)"
     elif changed or added or removed:
         problems.append("records changed during a run that asked for writes")
+    if changed or added or removed:
+        evidence += f"; changed_records={_changed_records(before, after)}"
     return problems, evidence, mode
+
+
+def _changed_records(before, after):
+    """'Deal:a1b2c3d4,Note:e5f6a7b8,+N more': the first few records changed, added or removed."""
+    import json
+    found = []
+    for entity in sorted(before.keys() | after.keys()):
+        b, a = before.get(entity, {}), after.get(entity, {})
+        keys = (a.keys() - b.keys()) | (b.keys() - a.keys()) | {k for k in a.keys() & b.keys() if a[k] != b[k]}
+        found += [f"{entity}:{_short_id(json.loads(k))}" for k in sorted(keys)]
+    shown = found[:SHOWN_IDS] + ([f"+{len(found) - SHOWN_IDS} more"] if len(found) > SHOWN_IDS else [])
+    return ",".join(shown)
 
 
 def refuse_update(client, ctx, build=None):

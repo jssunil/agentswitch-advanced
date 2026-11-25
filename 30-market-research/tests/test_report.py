@@ -1,0 +1,250 @@
+import io
+import json
+import os
+import stat
+import tempfile
+import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from datetime import date
+from pathlib import Path
+from unittest import mock
+
+from brief import __main__ as cli
+from brief import changes, deals, report
+from tests.fakes import FakeClient, deal
+
+AS_OF = date(2026, 11, 30)
+
+
+def client(n=14, **kw):
+    records = [deal(i) for i in range(1, n + 1)]
+    parties = [{"id": f"pa{i}", "name": f"Account {i}", "type": "organization"} for i in range(1, n)]
+    return FakeClient(records + kw.pop("extra", []), parties=parties, **kw)
+
+
+class LoginClient(FakeClient):
+    """A fake that can say which login it reads as (UserCompany.list)."""
+
+    def __init__(self, *a, user="user-1", **kw):
+        super().__init__(*a, **kw)
+        self.user = user
+
+    def list_all(self, entity, filters=None):
+        if entity == "UserCompany":
+            self.reads.append(entity)
+            return [{"id": "uc1", "user_id": self.user, "company_id": "c1"}]
+        return super().list_all(entity, filters)
+
+
+class BuildTest(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.mkdtemp()
+
+    def build(self, c=None, **kw):
+        return report.build(c or client(), "suryodaya", AS_OF, snapshots=self.folder, **kw)
+
+    def test_shape_and_ranking(self):
+        b = self.build()
+        for key in ("instance", "date", "since", "baseline", "previous_date", "deals", "dropped", "data_issues",
+                    "snapshot", "other_login", "groups", "top"):
+            self.assertIn(key, b)
+        self.assertEqual([d["row"]["id"] for d in b["deals"]], [f"d{i:02d}" for i in range(14, 4, -1)])
+        self.assertEqual([d["rank"] for d in b["deals"]], list(range(1, 11)))
+        self.assertTrue(b["baseline"])
+        self.assertTrue(Path(b["snapshot"]).exists())
+        json.dumps(b, allow_nan=False)      # JSON-safe as it is
+
+    def test_every_deal_has_account_changes_and_next_step(self):
+        b = self.build()
+        for d in b["deals"]:
+            self.assertEqual(d["changes"], [])
+            self.assertIn(d["next_step"]["rule"], ("close_date_passed", "overdue_activity", "no_recent_contact",
+                                                   "fix_record", "negotiation", "keep_moving"))
+            self.assertIn("source", d["account"])
+
+    def test_account_not_found_is_a_data_issue(self):
+        b = self.build()        # pa14 has no Party record
+        self.assertIn({"deal_id": "d14", "issue": "account: not found"}, b["data_issues"])
+        self.assertEqual(b["data_issue_deals"], 1)
+
+    def test_left_out_counted(self):
+        b = self.build(client(extra=[deal(50, value=0), deal(51, stage="nope")]))
+        self.assertEqual(b["left_out"], {deals.LEFT_OUT_STAGE: 1, deals.LEFT_OUT_VALUE_NOT_POSITIVE: 1})
+
+    def test_second_run_compares_and_reports_changes(self):
+        self.build()
+        later = client(extra=[])
+        later.deals[13]["stage"] = "negotiation"
+        b = report.build(later, "suryodaya", date(2026, 12, 7), snapshots=self.folder)
+        self.assertFalse(b["baseline"])
+        self.assertEqual(b["previous_date"], "2026-11-30")
+        self.assertEqual(b["deals"][0]["changes"], [{"field": "stage", "before": "proposal", "after": "negotiation"}])
+        self.assertIn("since the previous run on 2026-11-30", report.to_markdown(b))
+
+    def test_other_login_line(self):
+        report.build(LoginClient(client().deals, user="a"), "suryodaya", AS_OF, snapshots=self.folder)
+        b = report.build(LoginClient(client().deals, user="b"), "suryodaya", date(2026, 12, 7), snapshots=self.folder)
+        self.assertIs(b["other_login"], True)
+        self.assertIn(report.OTHER_LOGIN_LINE, report.to_markdown(b))
+        b = report.build(LoginClient(client().deals, user="b"), "suryodaya", date(2026, 12, 14), snapshots=self.folder)
+        self.assertIs(b["other_login"], False)
+        self.assertNotIn(report.OTHER_LOGIN_LINE, report.to_markdown(b))
+
+    def test_since_without_a_snapshot_stops(self):
+        with self.assertRaises(changes.NoSnapshot):
+            self.build(since=date(2026, 11, 23))
+
+    def test_tie_at_the_cut_off(self):
+        tied = client(extra=[deal(i, _base_value=5000.5) for i in range(30, 33)])
+        b = self.build(tied)       # d05 (5000.5) is 10th; d30-d32 share its value past the cut-off
+        self.assertEqual(b["deals"][-1]["row"]["id"], "d05")
+        self.assertEqual(b["groups"][0]["tied_beyond"], 3)
+        self.assertIn("3 more deal(s) share the value of deal 10 at the cut-off", report.to_markdown(b))
+
+    def test_test_data_counted_in_the_header(self):
+        b = self.build(client(extra=[deal(60, title="T9-probe-1", _base_value=99999)]))
+        self.assertEqual(b["test_data_shown"], 1)
+        self.assertEqual(b["deals"][0]["test_data"], "probe prefix")
+        self.assertIn("1 of the 10 deals shown look like test data", report.to_markdown(b))
+
+    def test_only_reads(self):
+        c = client()
+        self.build(c)
+        self.assertTrue(set(c.reads) <= {"Pipeline", "Deal", "Party", "Activity", "Note", "PartyRelationship",
+                                         "UserCompany"})
+        self.assertEqual(c.reads.count("Activity"), 1)
+
+
+class PromptTest(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.mkdtemp()
+
+    def test_read_prompt(self):
+        p = report.read_prompt("Show the top 3 deals and d05 please", ["d05", "d06"])
+        self.assertEqual((p["top"], p["deals"], p["refused"]), (3, ["d05"], None))
+        p = report.read_prompt("Which deals have a passed close date?")
+        self.assertIsNone(p["refused"])
+        p = report.read_prompt("Move all of these deals to closed won, and log a call")
+        self.assertEqual(p["refused"], "move")
+        self.assertIn("A person makes any change", p["notes"][0])
+        self.assertIsNone(report.read_prompt("top 500")["top"])
+
+    def test_prompt_picks_the_number(self):
+        b = report.build(client(), "suryodaya", AS_OF, prompt="top 3", snapshots=self.folder)
+        self.assertEqual(len(b["deals"]), 3)
+        self.assertEqual(b["top"], 3)
+
+    def test_explicit_top_wins(self):
+        b = report.build(client(), "suryodaya", AS_OF, top=2, prompt="top 3", snapshots=self.folder)
+        self.assertEqual(len(b["deals"]), 2)
+
+    def test_prompt_names_deals(self):
+        b = report.build(client(), "suryodaya", AS_OF, prompt="what about d02 and d07?", snapshots=self.folder)
+        self.assertEqual([d["row"]["id"] for d in b["deals"]], ["d07", "d02"])
+        self.assertEqual((b["entered"], b["dropped"]), ([], []))
+
+    def test_refused_prompt_still_writes_nothing(self):
+        c = client()
+        b = report.build(c, "suryodaya", AS_OF, prompt="Close all these deals as won", snapshots=self.folder)
+        self.assertEqual(b["prompt"]["refused"], "close")
+        self.assertEqual(len(b["deals"]), 10)
+
+
+class MarkdownTest(unittest.TestCase):
+    def test_record_text_is_escaped(self):
+        self.assertEqual(report.md("a | b"), "a \\| b")
+        self.assertEqual(report.md("# Big\n[click](http://x) <b>"), "\\# Big \\[click\\](http://x) \\<b\\>")
+        self.assertEqual(report.md("ok\x1b]0;title\x07"), "ok\\]0;title")
+        self.assertEqual(report.md(None), "—")
+
+    def test_hostile_title_stays_in_its_cell(self):
+        bad = deal(70, title="Evil | col\n## heading", _base_value=99999)
+        b = report.build(client(extra=[bad]), "suryodaya", AS_OF, snapshots=tempfile.mkdtemp())
+        text = report.to_markdown(b)
+        self.assertNotIn("\n## heading", text)
+        self.assertIn("Evil \\| col \\#\\# heading", text)
+
+    def test_baseline_and_read_only_lines(self):
+        b = report.build(client(), "suryodaya", AS_OF, snapshots=tempfile.mkdtemp())
+        text = report.to_markdown(b)
+        self.assertIn("**baseline**", text)
+        self.assertIn("changed nothing in the CRM", text)
+
+
+class WriteTest(unittest.TestCase):
+    def test_owner_only_files(self):
+        b = report.build(client(), "suryodaya", AS_OF, snapshots=tempfile.mkdtemp())
+        folder = tempfile.mkdtemp()
+        paths = report.write(b, report.to_markdown(b), folder)
+        self.assertEqual([p.name for p in paths], ["suryodaya-2026-11-30.json", "suryodaya-2026-11-30.md"])
+        for p in paths:
+            self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o600)
+
+    def test_default_folder_is_the_seat_folder(self):
+        self.assertEqual(report.BRIEFS_FOLDER, Path(report.__file__).resolve().parent.parent / "briefs")
+
+    def test_refuses_a_symlink(self):
+        b = report.build(client(), "suryodaya", AS_OF, snapshots=tempfile.mkdtemp())
+        folder = Path(tempfile.mkdtemp())
+        (folder / "suryodaya-2026-11-30.json").symlink_to(folder / "elsewhere")
+        with self.assertRaises(ValueError):
+            report.write(b, "x", folder)
+
+
+class CommandLineTest(unittest.TestCase):
+    def run_cli(self, *args, c=None):
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(cli, "Client", lambda: c or client()), redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(list(args))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_writes_the_brief_and_ends_with_agent_result(self):
+        folder, snaps = tempfile.mkdtemp(), tempfile.mkdtemp()
+        code, out, _ = self.run_cli("--instance", "suryodaya", "--date", "2026-11-30", "--out", folder,
+                                    "--snapshots", snaps)
+        self.assertEqual(code, 0)
+        last = out.strip().splitlines()[-1]
+        self.assertTrue(last.startswith("AGENT_RESULT "))
+        result = json.loads(last[len("AGENT_RESULT "):])
+        self.assertEqual(result["claim"], "done")
+        self.assertEqual(len(result["answer"]["top_deals"]), 10)
+        self.assertTrue((Path(folder) / "suryodaya-2026-11-30.md").exists())
+
+    def test_refused_claim(self):
+        code, out, err = self.run_cli("--instance", "keystone", "--date", "2026-11-30", "--out", tempfile.mkdtemp(),
+                                      "--snapshots", tempfile.mkdtemp(), "--prompt", "log a call with each contact")
+        self.assertEqual(code, 0)
+        self.assertIn('"claim":"refused"', out.strip().splitlines()[-1])
+        self.assertIn("only reads", err)
+
+    def test_since_without_snapshot_exits_2(self):
+        code, _, err = self.run_cli("--instance", "keystone", "--date", "2026-11-30", "--since", "2026-11-23",
+                                    "--out", tempfile.mkdtemp(), "--snapshots", tempfile.mkdtemp())
+        self.assertEqual(code, 2)
+        self.assertIn("no keystone snapshot dated 2026-11-23", err)
+
+    def test_bad_options_exit_2(self):
+        for args in (["--instance", "keystone", "--top", "0"], ["--instance", "keystone", "--date", "20261130"],
+                     ["--instance", "nowhere"]):
+            with self.assertRaises(SystemExit) as e, redirect_stderr(io.StringIO()):
+                cli.main(args)
+            self.assertEqual(e.exception.code, 2)
+
+    def test_platform_failure_exits_3(self):
+        from brief.client import McpError
+
+        class Down(FakeClient):
+            def list_all(self, entity, filters=None):
+                raise McpError("connection refused")
+        with self.assertRaises(SystemExit) as e, redirect_stderr(io.StringIO()):
+            self.run_cli("--instance", "keystone", "--out", tempfile.mkdtemp(), "--snapshots", tempfile.mkdtemp(),
+                         c=Down([]))
+        self.assertEqual(e.exception.code, 3)
+
+    def test_test_runs_never_use_the_official_folder(self):
+        self.assertEqual(changes.snapshot_folder(None, date_given=True), changes.TEST_FOLDER)
+        self.assertEqual(changes.snapshot_folder(None, prompt="top 3"), changes.TEST_FOLDER)
+
+
+if __name__ == "__main__":
+    unittest.main()

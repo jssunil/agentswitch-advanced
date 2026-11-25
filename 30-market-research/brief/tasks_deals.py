@@ -129,13 +129,16 @@ def _brief(client, ctx, build=None, n=TOP):
     if build is not None:
         snapshots = tempfile.mkdtemp(prefix="t1-6-", dir=ctx["workdir"])
         out = build(client, ctx["instance"], ctx["as_of"], top=n, snapshots=snapshots)
+        tied = {(g.get("company_id"), g.get("base_currency")): g.get("tied_beyond")
+                for g in out.get("groups") or () if isinstance(g, dict) and g.get("tied_beyond")}
         return {"mode": "full", "shown": [from_dict(d["row"]) for d in out["deals"]],
-                "issues": list(out.get("data_issues") or [])}
+                "issues": list(out.get("data_issues") or []), "tied": tied}
     deals = optional_module("deals")
     if deals is None:
         return None
     ranked, issues = deals.open_deals(_rows(client))
-    return {"mode": "component", "shown": deals.top(ranked, n), "issues": issues}
+    return {"mode": "component", "shown": deals.top(ranked, n), "issues": issues,
+            "tied": deals.tied_beyond(ranked, n)}
 
 
 def _by_group(shown):
@@ -347,20 +350,33 @@ def tie_break(client, ctx, build=None):
         record, best, _ = t
         tied = dict(value=best.value * 3, _base_value=best.base_value * 3)
         seeds = [_seed(record, "tie-9", **tied), _seed(record, "tie-10", **tied)]
+        # A tie at the cut-off too (Deepak's review of 1a3199d, point 3): two deals with the value of
+        # the deal that becomes 10th once the two above are added, so 3 or more deals share it there.
+        key = (best.company_id, best.base_currency)
+        group = recount(_rows(client))["groups"].get(key, [])
+        if len(group) >= TOP - 2:
+            at_cut = group[TOP - 3].base_value
+            seeds += [_seed(record, "cut-a", value=at_cut, _base_value=at_cut),
+                      _seed(record, "cut-b", value=at_cut, _base_value=at_cut)]
         first = _brief(SeededClient(client, seeds), ctx, build)
         if first is None:
             return _infrastructure(NOT_BUILT)
         second = _brief(SeededClient(client, seeds, reverse=True), ctx, build)
-        key = (best.company_id, best.base_currency)
         got = _by_group(first["shown"]).get(key, [])
         problems = []
         if got[:2] != [SEED + "tie-10", SEED + "tie-9"]:
             problems.append("seeded tie not in deal-id order (as text)")
         if [r.id for r in first["shown"]] != [r.id for r in second["shown"]]:
             problems.append("a second run, reading deals in reverse order, showed a different list")
+        want_cut = {k: sum(1 for r in g[TOP:] if r.base_value == g[TOP - 1].base_value)
+                    for k, g in recount(_rows(SeededClient(client, seeds)))["groups"].items() if len(g) > TOP}
+        want_cut = {k: v for k, v in want_cut.items() if v}
+        if first.get("tied") != want_cut:
+            problems.append("deals sharing the value at the cut-off not reported as the recount finds them")
         real_ties = sum(1 for g in recount(_rows(client))["groups"].values()
                         for a, b in zip(g, g[1:]) if a.base_value == b.base_value)
-        evidence = f"verifier=seeded_tie; seeded=2; runs=2; real_adjacent_ties={real_ties}"
+        evidence = (f"verifier=seeded_tie; seeded={len(seeds)}; runs=2; real_adjacent_ties={real_ties}; "
+                    f"tied_at_cut_off={sum(want_cut.values())}")
         return _result(not problems, "; ".join([evidence] + problems), first["mode"])
     except Exception as e:
         return _infrastructure(e)

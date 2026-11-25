@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from unittest import mock
 from datetime import date
 
 from brief import deals, tasks_deals
@@ -20,7 +21,10 @@ def data():
 
 def honest_build(client, instance, as_of, top=10, snapshots=None, **_):
     ranked, issues = deals.open_deals(tasks_deals._rows(client))
-    return {"deals": [{"row": to_dict(r)} for r in deals.top(ranked, top)], "data_issues": issues}
+    tied = deals.tied_beyond(ranked, top)
+    groups = [{"company_id": c, "base_currency": cur, "tied_beyond": tied.get((c, cur), 0)}
+              for c, cur, _ in deals.groups(ranked)]
+    return {"deals": [{"row": to_dict(r)} for r in deals.top(ranked, top)], "data_issues": issues, "groups": groups}
 
 
 def broken(change):
@@ -52,6 +56,7 @@ class TasksDealsTest(unittest.TestCase):
             self.assertTrue(r["passed"], (tid, r))
             self.assertEqual(r["score"], 1.0)
 
+    @mock.patch.dict("sys.modules", {"brief.report": None})   # component mode: as before report.py existed
     def test_component_mode_is_capped(self):
         for tid, r in self.run_all().items():     # report.py doesn't exist yet: deals.py directly
             self.assertTrue(r["passed"], (tid, r))
@@ -127,10 +132,23 @@ class TasksDealsTest(unittest.TestCase):
         r = tasks_deals.zero_value(self.client, self.ctx, build=on_base)
         self.assertFalse(r["passed"])
 
+    def test_tie_at_cut_off_not_reported_fails_task6(self):
+        def no_ties(out):
+            for g in out["groups"]:
+                g["tied_beyond"] = 0
+        r = tasks_deals.tie_break(self.client, self.ctx, build=broken(no_ties))
+        self.assertEqual((r["passed"], r["score"]), (False, 0.0))
+        self.assertIn("cut-off not reported", r["evidence"])
+
+    def test_real_brief_passes_tasks_1_to_6_in_full_mode(self):
+        for tid, title, fn in tasks_deals.TASKS:
+            r = fn(self.client, self.ctx)
+            self.assertEqual((r["passed"], r["score"]), (True, 1.0), (tid, r["evidence"]))
+
     def test_numeric_tie_break_fails_task6(self):
         def numeric(client, instance, as_of, top=10, **_):
             ranked, issues = deals.open_deals(tasks_deals._rows(client))
-            ranked.sort(key=lambda r: (-r.base_value, int(r.id.rsplit("-", 1)[-1]) if r.id.startswith(tasks_deals.SEED)
+            ranked.sort(key=lambda r: (-r.base_value, int(r.id.rsplit("-", 1)[-1]) if r.id.startswith(tasks_deals.SEED + "tie-")
                                        else 0, r.id))
             return {"deals": [{"row": to_dict(r)} for r in ranked[:top]], "data_issues": issues}
         r = tasks_deals.tie_break(self.client, self.ctx, build=numeric)

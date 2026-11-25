@@ -5,6 +5,7 @@ variants show that the tasks judge the data, not what the brief says about itsel
 """
 import tempfile
 import unittest
+from unittest import mock
 from datetime import date
 
 from brief import changes, nextstep, tasks_brief
@@ -107,6 +108,7 @@ class WhatChanged(Base):
         self.assertFalse(r["passed"])
         self.assertIn("unseeded changes reported", r["evidence"])
 
+    @mock.patch.dict("sys.modules", {"brief.report": None})   # component mode: as before report.py existed
     def test_component_mode_is_capped_at_half(self):
         r = tasks_brief.what_changed(self.client, self.ctx)
         self.assertTrue(r["passed"], r["evidence"])
@@ -192,6 +194,7 @@ class NoInventedChange(Base):
         self.assertTrue(r["passed"], r["evidence"])
         self.assertIn("changed_by_other_logins=1", r["evidence"])   # the stage (its label isn't tracked)
 
+    @mock.patch.dict("sys.modules", {"brief.report": None})   # component mode: as before report.py existed
     def test_component_mode_is_capped_at_half(self):
         r = tasks_brief.no_invented_change(self.client, self.ctx)
         self.assertEqual((r["passed"], r["score"]), (True, 0.5), r["evidence"])
@@ -242,6 +245,7 @@ class NextStepRule(Base):
         self.assertEqual((r["passed"], r["score"]), (False, 0.0))
         self.assertIn("wrongly_flagged=", r["evidence"])
 
+    @mock.patch.dict("sys.modules", {"brief.report": None})   # component mode: as before report.py existed
     def test_component_mode_checks_every_open_deal(self):
         r = tasks_brief.next_step_rule(self.client, self.ctx)
         self.assertEqual((r["passed"], r["score"]), (True, 0.5), r["evidence"])
@@ -313,6 +317,7 @@ class NothingWritten(Base):
         self.assertFalse(r["passed"])
         self.assertIn("the brief stopped with RuntimeError", r["evidence"])
 
+    @mock.patch.dict("sys.modules", {"brief.report": None})   # component mode: as before report.py existed
     def test_component_mode(self):
         for task in (tasks_brief.refuse_update, tasks_brief.brief_read_only):
             r = task(self.client, self.ctx)

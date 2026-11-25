@@ -309,6 +309,65 @@ class CommandLineTest(unittest.TestCase):
                          c=Down([]))
         self.assertEqual(e.exception.code, 3)
 
+    def tearDown(self):
+        from brief import debug
+        debug.ENABLED = False
+
+    def _args(self):
+        return ["--instance", "keystone", "--date", "2026-11-30", "--out", tempfile.mkdtemp(),
+                "--snapshots", tempfile.mkdtemp()]
+
+    def test_unexpected_error_gives_a_reason_line_and_a_failed_claim(self):
+        with mock.patch.object(report, "build", side_effect=KeyError("deals")):
+            code, out, err = self.run_cli(*self._args())
+        self.assertEqual(code, 1)
+        self.assertEqual(out.strip().splitlines()[-1], 'AGENT_RESULT {"claim":"failed"}')
+        self.assertIn("Traceback (most recent call last)", err)
+        self.assertEqual(err.strip().splitlines()[-1], "brief: unexpected error: KeyError: 'deals'")
+        # Seat 34 merges stderr into stdout and takes the very last line as the reason on exit != 0.
+        merged = io.StringIO()
+        with mock.patch.object(cli, "Client", lambda: FakeClient([])), \
+                mock.patch.object(report, "build", side_effect=KeyError("deals")), \
+                redirect_stdout(merged), redirect_stderr(merged):
+            self.assertEqual(cli.main(self._args()), 1)
+        lines = merged.getvalue().strip().splitlines()
+        self.assertEqual(lines[-2], 'AGENT_RESULT {"claim":"failed"}')
+        self.assertEqual(lines[-1], "brief: unexpected error: KeyError: 'deals'")
+
+    def test_a_failure_writing_the_brief_is_caught_too(self):
+        with mock.patch.object(report, "write", side_effect=OSError("disk full")):
+            code, out, err = self.run_cli(*self._args())
+        self.assertEqual(code, 1)
+        self.assertEqual(err.strip().splitlines()[-1], "brief: unexpected error: OSError: disk full")
+        self.assertIn('"claim":"failed"', out)
+
+    def test_server_text_in_an_error_is_cleaned(self):
+        with mock.patch.object(report, "build", side_effect=ValueError("bad\x1b[31m reply\nPASS")):
+            _, _, err = self.run_cli(*self._args())
+        self.assertNotIn("\x1b", err)
+        self.assertEqual(err.strip().splitlines()[-1], "brief: unexpected error: ValueError: bad[31m reply PASS")
+
+    def test_debug_switch(self):
+        from brief import debug
+        self.run_cli(*self._args(), "--debug")
+        self.assertTrue(debug.ENABLED)
+        self.run_cli(*self._args())
+        self.assertFalse(debug.ENABLED)
+
+    def test_debug_shows_the_traceback_of_a_platform_error(self):
+        from brief.client import McpError
+
+        class Down(FakeClient):
+            def list_all(self, entity, filters=None):
+                raise McpError("connection refused")
+        for flags, shown in (([], False), (["--debug"], True)):
+            err = io.StringIO()
+            with self.assertRaises(SystemExit), mock.patch.object(cli, "Client", lambda: Down([])), \
+                    redirect_stdout(io.StringIO()), redirect_stderr(err):
+                cli.main(self._args() + flags)
+            self.assertEqual("Traceback (most recent call last)" in err.getvalue(), shown, flags)
+            self.assertIn("connection refused", err.getvalue())
+
     def test_test_runs_never_use_the_official_folder(self):
         self.assertEqual(changes.snapshot_folder(None, date_given=True), changes.TEST_FOLDER)
         self.assertEqual(changes.snapshot_folder(None, prompt="top 3"), changes.TEST_FOLDER)

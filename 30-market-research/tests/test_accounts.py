@@ -106,6 +106,7 @@ class AccountTest(unittest.TestCase):
     def test_not_found(self):
         f = facts(row(1, party_id="pa404"), [act("a1", deal_id="d01")], parties=[party("pa1")])
         self.assertEqual((f["found"], f["name"], f["type"], f["redacted"]), (False, None, None, []))
+        self.assertIsNone(f["contacts"])              # as the other account fields (PLAN.md)
         self.assertEqual(f["source"], "deal")       # the deal's own activities still count
         self.assertEqual(accounts.issues(row(1), f), [{"deal_id": "d01", "issue": accounts.ACCOUNT_NOT_FOUND}])
 

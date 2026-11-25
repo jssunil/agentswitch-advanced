@@ -14,7 +14,7 @@ and a note that a person makes any change (`prompt.refused`).
 
 Record text (titles, names, subjects) reaches the Markdown only through md(), which removes
 control and invisible characters, keeps it on one line and escapes Markdown, so a deal title
-can't add a heading, a link or a table column.
+can't add a heading, a link or a table column (an e-mail address still shows as a mailto link).
 """
 import json
 import os
@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import accounts, changes, deals, nextstep
-from .rows import from_record, stage_labels, to_dict
+from .rows import from_record, stage_labels, stage_usable, to_dict
 from .values import business_date, display_text, money_text
 
 DEFAULT_TOP = 10
@@ -39,8 +39,42 @@ OTHER_LOGIN_LINE = ("compared with a snapshot taken by another login: some chang
 # --prompt: what it can pick, and the words that ask for a change (never followed).
 _TOP = re.compile(r"\btop\s+(\d{1,3})\b|\b(\d{1,3})\s+(?:largest|biggest|top)\b", re.IGNORECASE)
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
-_WRITE = re.compile(r"\b(move|mark|log|update|change|edit|create|delete|remove|send|assign|reassign|"
-                    r"schedule|book|close)\b(?!\s+dates?\b)", re.IGNORECASE)
+# A change word counts only as an instruction: the first word of a sentence or clause, after any
+# polite lead-in ("please", "can you", "go ahead and"...). So "Move these to won", "...and log a
+# call" and "Can you mark D-2 as won?" are refused, while a noun ("any change in stage", "the call
+# log", "behind schedule"), a question ("what should I close first?") or a negation ("Do not change
+# anything") is not: none of them starts a clause with the verb.
+_CHANGE_VERBS = frozenset({"move", "mark", "log", "update", "change", "edit", "create", "delete", "remove",
+                           "send", "assign", "reassign", "schedule", "book", "close"})
+_CLAUSE_BREAK = re.compile(r"[.;:!?,\n]+|\b(?:and|then|also|but)\b", re.IGNORECASE)
+_LEAD_IN = re.compile(r"^(?:please|kindly|just|now|ok(?:ay)?|go ahead and|let'?s|let us|"
+                      r"(?:can|could|would|will) you(?: please)?|"
+                      r"i(?: want| need| would like|'d like) you to)\b\s*", re.IGNORECASE)
+# Clause starts that use a change word without asking to change a record.
+_NOT_A_CHANGE = re.compile(
+    r"^(?:update|send|brief)\s+(?:me|us)\b"       # asks for information: "update me on..."
+    r"|^close\s+dates?\b"                           # the field: "close date first"
+    r"|^[a-z]+\s+of\b"                              # a noun: "change of plan", "log of calls"
+    r"|^[a-z]+['’]s\b"                              # a name: "Mark's deals"
+    r"|^(?:remove|hide|drop)\b.*\bfrom\s+(?:the|this|my)\s+(?:list|brief|report|table|summary)\b",
+    re.IGNORECASE)
+# What a deal id looks like on the platform, to report one that is named but not found.
+_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+
+
+def change_request(text):
+    """The first change word used as an instruction in `text`, lower case, or None."""
+    for clause in _CLAUSE_BREAK.split(str(text or "")):
+        clause = clause.strip().lstrip("\"'“”‘’([").strip()
+        while True:
+            shorter = _LEAD_IN.sub("", clause, count=1)
+            if shorter == clause:
+                break
+            clause = shorter
+        first = re.match(r"[A-Za-z]+", clause)
+        if first and first.group(0).lower() in _CHANGE_VERBS and not _NOT_A_CHANGE.search(clause):
+            return first.group(0).lower()
+    return None
 
 
 def today_ist():
@@ -48,9 +82,10 @@ def today_ist():
 
 
 def read_prompt(prompt, deal_ids=()):
-    """{top, deals, refused, notes} from the --prompt text. `deals` are ids of `deal_ids` named
-    in it (whole words), in the order named; `top` a number asked for (1-MAX_TOP) or None;
-    `refused` the first change word, or None."""
+    """{top, deals, refused, notes} from the --prompt text. `deals` are the deal ids named in it
+    (whole words), in the order named: ids in `deal_ids`, and any other word shaped like a
+    platform deal id (build() notes those as not found); `top` a number asked for (1-MAX_TOP)
+    or None; `refused` the first change word used as an instruction (change_request), or None."""
     out = {"top": None, "deals": [], "refused": None, "notes": []}
     if not prompt:
         return out
@@ -64,14 +99,33 @@ def read_prompt(prompt, deal_ids=()):
             out["notes"].append(f"a top of {n} is outside 1-{MAX_TOP}; the default is used")
     known = set(deal_ids)
     for token in _TOKEN.findall(text):
-        if token in known and token not in out["deals"]:
+        if (token in known or _UUID.match(token)) and token not in out["deals"]:
             out["deals"].append(token)
-    w = _WRITE.search(text)
+    w = change_request(text)
     if w:
-        out["refused"] = w.group(1).lower()
+        out["refused"] = w
         out["notes"].append(f"the prompt asks to {out['refused']} records; this brief only reads and "
                             "suggests. A person makes any change in the CRM")
     return out
+
+
+def _not_shown(named, shown_ids, rows):
+    """One note per deal the prompt named that the brief doesn't show: closed, left out of the
+    ranking (with the reason), or not found (no such deal, or one this login can't see)."""
+    by_id = {r.id: r for r in rows}
+    notes = []
+    for deal_id in named:
+        if deal_id in shown_ids:
+            continue
+        row = by_id.get(deal_id)
+        if row is None:
+            why = "not found (no such deal, or one this login can't see)"
+        elif stage_usable(row) and row.stage in deals.CLOSED:
+            why = changes.CLOSED.get(row.stage, "closed")
+        else:
+            why = deals.left_out_reason(row) or "not ranked"
+        notes.append(f"deal {deal_id} is not shown: {why}")
+    return notes
 
 
 def build(client, instance, as_of, top=None, since=None, prompt=None, snapshots=None):
@@ -97,12 +151,15 @@ def build(client, instance, as_of, top=None, since=None, prompt=None, snapshots=
             unreadable += 1
     ranked, issues = deals.open_deals(rows)
 
-    asked = read_prompt(prompt, [r.id for r in ranked])
+    asked = read_prompt(prompt, [r.id for r in rows])
     n = top if top is not None else (asked["top"] or DEFAULT_TOP)
     if isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= MAX_TOP:
         raise ValueError(f"top must be a whole number from 1 to {MAX_TOP}")
     named = set(asked["deals"])
     shown = [r for r in ranked if r.id in named] if named else deals.top(ranked, n)
+    asked["notes"][:0] = _not_shown(asked["deals"], {r.id for r in shown}, rows)
+    # rank: the deal's place in its company and base currency, also for a hand-picked list
+    place = {r.id: i for _, _, group in deals.groups(ranked) for i, r in enumerate(group, 1)}
 
     data = accounts.load(client, rows)
     login = changes.login_ref(client)
@@ -122,7 +179,7 @@ def build(client, instance, as_of, top=None, since=None, prompt=None, snapshots=
         rank_in_group[key] += 1
         account = accounts.facts(client, row, as_of, data=data)
         issues.extend(accounts.issues(row, account))
-        entries.append({"rank": rank_in_group[key], "row": to_dict(row), "account": account,
+        entries.append({"rank": place[row.id], "row": to_dict(row), "account": account,
                         "changes": compared["per_deal"].get(row.id, []),
                         "next_step": nextstep.suggest(row, account, as_of),
                         "test_data": deals.fixture_reason(row.title)})
@@ -153,15 +210,22 @@ def build(client, instance, as_of, top=None, since=None, prompt=None, snapshots=
 # ---------------------------------------------------------------- Markdown
 
 _MD_SPECIAL = re.compile(r"([\\`*_{}\[\]<>#|~!])")
+# GitHub turns bare "https://..." and "www...." into links; a backslash stops it and isn't shown.
+_AUTOLINK = re.compile(r"(://|(?<![A-Za-z0-9])www\.)", re.IGNORECASE)
 
 
 def md(value, empty="—"):
     """Record text, safe in Markdown: no control or invisible characters, one line, special
-    characters escaped (so it can't make a heading, link, image, HTML or a table column)."""
+    characters escaped, and "://" and "www." broken (so it can't make a heading, link, image,
+    HTML or a table column). An e-mail address still shows as a mailto link on GitHub, which no
+    escape stops; it opens a mail program, never a page."""
     if value is None or value == "":
         return empty
     text = " ".join(display_text(value).split())
-    return _MD_SPECIAL.sub(r"\\\1", text) if text else empty
+    if not text:
+        return empty
+    text = _MD_SPECIAL.sub(r"\\\1", text)
+    return _AUTOLINK.sub(lambda m: "\\://" if m.group(1) == "://" else m.group(1)[:3] + "\\.", text)
 
 
 def quoted(value):
@@ -191,7 +255,9 @@ def to_markdown(brief):
         for d in group_deals:
             lines += [""] + _deal_detail(b, d)
     if not b["deals"]:
-        lines += ["", "No open deal could be ranked."]
+        named = b["prompt"] and b["prompt"]["deals"]
+        lines += ["", "None of the deals the request named is a ranked open deal (see the notes above)." if named
+                  else "No open deal could be ranked."]
     lines += _dropped(b) + _issues(b)
     lines += ["", "---", "Read-only: this brief changed nothing in the CRM. Next steps are suggestions for a person "
               "to act on."]

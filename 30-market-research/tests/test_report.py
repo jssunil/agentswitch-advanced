@@ -141,7 +141,68 @@ class PromptTest(unittest.TestCase):
     def test_prompt_names_deals(self):
         b = report.build(client(), "suryodaya", AS_OF, prompt="what about d02 and d07?", snapshots=self.folder)
         self.assertEqual([d["row"]["id"] for d in b["deals"]], ["d07", "d02"])
+        self.assertEqual([d["rank"] for d in b["deals"]], [8, 13])     # place in the ranking, not in the list
         self.assertEqual((b["entered"], b["dropped"]), ([], []))
+        text = report.to_markdown(b)
+        self.assertIn("### 8. Deal 7", text)
+        self.assertIn("| 13 | Deal 2 |", text)
+
+    def test_named_deals_not_shown_get_a_note(self):
+        missing = "0f8fad5b-d9cb-469f-a165-70867728950e"
+        extra = [deal(20, stage="closed_won"), deal(21, value=0, _base_value=0)]
+        b = report.build(client(extra=extra), "suryodaya", AS_OF, snapshots=self.folder,
+                         prompt=f"what about d03, d20, d21 and {missing}?")
+        self.assertEqual([d["row"]["id"] for d in b["deals"]], ["d03"])
+        self.assertEqual(b["prompt"]["deals"], ["d03", "d20", "d21", missing])
+        self.assertEqual(b["prompt"]["notes"], [
+            "deal d20 is not shown: closed won",
+            f"deal d21 is not shown: {deals.LEFT_OUT_VALUE_NOT_POSITIVE}",
+            f"deal {missing} is not shown: not found (no such deal, or one this login can't see)"])
+        text = report.to_markdown(b)
+        self.assertIn("Showing the 1 open deal(s) the request named, of 4 named.", text)
+        self.assertIn("deal d20 is not shown: closed won", text)
+
+    def test_no_named_deal_shown(self):
+        b = report.build(client(extra=[deal(20, stage="closed_lost")]), "suryodaya", AS_OF,
+                         snapshots=self.folder, prompt="and d20?")
+        self.assertEqual(b["deals"], [])
+        self.assertIn("None of the deals the request named is a ranked open deal", report.to_markdown(b))
+
+    def test_ordinary_questions_are_not_change_requests(self):
+        # Deepak's review (1): each asks for information, but the word alone made it "refused".
+        # The prompts are from his review and his 25 Nov patch, plus a few more.
+        for text in ("top 5 deals and any change in stage",
+                     "Brief me on the 10 largest deals. Do not change anything.",
+                     "show the call log for the top deals",
+                     "which deals are behind schedule?",
+                     "what should I close first this week?",
+                     "top 5 deals; remove test data from the list",
+                     "Update me on the top deals",
+                     "Send me the brief",
+                     "Show deals, close date first",
+                     "Which deals have a passed close date?",
+                     "Change of plan: just the top 3",
+                     "Mark's deals, top 5",
+                     "Don't update anything, only show the top 10",
+                     "Should I schedule a call with d05?"):
+            p = report.read_prompt(text)
+            self.assertIsNone(p["refused"], text)
+            self.assertEqual(p["notes"], [], text)
+
+    def test_change_requests_are_refused(self):
+        for text, word in (("Move all of these deals to closed won, and log a call with each main contact "
+                            "saying we spoke today.", "move"),
+                           ("Close all these deals as won", "close"),
+                           ("Can you mark D-2 as won?", "mark"),
+                           ("Please update the stage of d05", "update"),
+                           ("Show the top 3 and then schedule a call with each contact", "schedule"),
+                           ("Go ahead and delete the test deals", "delete"),
+                           ("I want you to create a follow-up task", "create"),
+                           ("top 5. Log a call with each of them", "log"),
+                           ("Could you please send an email to every contact", "send"),
+                           ("top 3, then reassign them to Priya", "reassign"),
+                           ("\"Book a meeting with the account\"", "book")):
+            self.assertEqual(report.read_prompt(text)["refused"], word, text)
 
     def test_refused_prompt_still_writes_nothing(self):
         c = client()
@@ -151,9 +212,16 @@ class PromptTest(unittest.TestCase):
 
 
 class MarkdownTest(unittest.TestCase):
+    def test_no_autolinks(self):
+        # Deepak's review (4): GitHub links bare "https://..." and "www...."; a backslash stops it
+        self.assertEqual(report.md("see https://a.example/x, HTTP://B.example and www.c.example"),
+                         "see https\\://a.example/x, HTTP\\://B.example and www\\.c.example")
+        self.assertEqual(report.md("(WWW.d.example) awww.e"), "(WWW\\.d.example) awww.e")
+        self.assertEqual(report.md("ftp://f.example"), "ftp\\://f.example")
+
     def test_record_text_is_escaped(self):
         self.assertEqual(report.md("a | b"), "a \\| b")
-        self.assertEqual(report.md("# Big\n[click](http://x) <b>"), "\\# Big \\[click\\](http://x) \\<b\\>")
+        self.assertEqual(report.md("# Big\n[click](http://x) <b>"), "\\# Big \\[click\\](http\\://x) \\<b\\>")
         self.assertEqual(report.md("ok\x1b]0;title\x07"), "ok\\]0;title")
         self.assertEqual(report.md(None), "—")
 

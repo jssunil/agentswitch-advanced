@@ -75,7 +75,7 @@ def facts(client, row, as_of, data=None):
         "state": field("state", address.get("state")),
         "currency": field("currency", currency_code(party.get("currency_id")) if found else None),
         "credit_limit": field("credit_limit", _money_text(party.get("credit_limit")) if found else None),
-        "contacts": field("contacts", _contacts(row, party, data)) if found else [],
+        "contacts": field("contacts", _contacts(row, party, data)),
         "other_open_deals": _other_open_deals(row, data.get("rows")),
         "last_contact": _last_contact(pool, as_of),
         "open_activities": _open_activities(pool, as_of),

@@ -221,6 +221,18 @@ def _compare_facts(want, got):
     return wrong
 
 
+def _show_fact_diffs(deal_id, wrong, want, got):
+    """--debug: the recount's value next to the brief's for each wrong fact (stderr only)."""
+    got = got if isinstance(got, dict) else {}
+    for fact in wrong:
+        if fact in ("name", "redacted name shown"):
+            debug.diff(deal_id, fact, None if want["name_redacted"] else want["name"], got.get("name"))
+        elif fact in want:
+            debug.diff(deal_id, fact, want[fact], got.get(fact))
+        else:
+            debug.diff(deal_id, fact, "account facts", got or None)
+
+
 def account_facts(client, ctx, build=None):
     """For every deal the brief shows: the account name, where the activities came from (deal or
     account), the last contact and the open activities match a recount from raw Party and
@@ -244,6 +256,8 @@ def account_facts(client, ctx, build=None):
             if wrong:
                 wrong_deals += 1
                 wrong_ids[deal_id] = "+".join(wrong)
+                if wrong_deals <= SHOWN_IDS:
+                    _show_fact_diffs(deal_id, wrong, want, got)
                 for w in wrong:
                     wrong_by_fact[w] = wrong_by_fact.get(w, 0) + 1
         evidence = (f"verifier=facts_recount; deals={len(shown)}; with_activity={with_activity}; "
@@ -300,6 +314,10 @@ def what_changed(client, ctx, build=None):
         elif stage_changes[0]["before"] != SEEDED_STAGE or want_stage is None \
                 or stage_changes[0]["after"] != want_stage.stage:
             problems.append("stage change reported with wrong before/after")
+        if problems and problems[-1].startswith(("seeded stage", "stage change")):
+            debug.diff(stage_deal.id, "seeded stage change",
+                       {"before": SEEDED_STAGE, "after": None if want_stage is None else want_stage.stage},
+                       found.get(stage_deal.id, []))
 
         value_changes = [c for c in found.get(value_deal.id, []) if c["field"] == "base_value"]
         want_value = truth.get(value_deal.id)
@@ -311,6 +329,11 @@ def what_changed(client, ctx, build=None):
         elif value_changes[0].get("cause"):
             # the seeded change moves the deal's own value, so it is not an exchange-rate change
             problems.append("seeded value change labelled as an exchange-rate change")
+        if problems and problems[-1].startswith(("seeded value", "value change")):
+            debug.diff(value_deal.id, "seeded value change",
+                       {"before": None if want_value is None else str(want_value.base_value + SEEDED_DELTA),
+                        "after": None if want_value is None else str(want_value.base_value), "cause": None},
+                       found.get(value_deal.id, []))
 
         # Anything else reported (another deal, or another field of a seeded deal) is judged like
         # task 9: genuine only if another login really edited it between our reads (R-2).
@@ -333,6 +356,10 @@ def what_changed(client, ctx, build=None):
         return _infrastructure(e)
 
 
+def _shown(value):
+    return "missing" if value is _MISSING else value
+
+
 def _judge_unseeded(reported, saved, truth):
     """(invented, genuine, ids of deals with an invented change) for changes the task did not seed. `reported` is (deal id, [change]);
     `saved` and `truth` are {deal id: to_dict(row)} for last week's snapshot and a fresh read.
@@ -352,6 +379,10 @@ def _judge_unseeded(reported, saved, truth):
                 invented += 1
                 if deal_id not in invented_ids:
                     invented_ids.append(deal_id)
+                if len(invented_ids) <= SHOWN_IDS:
+                    debug.diff(deal_id, f"invented {c['field']} change",
+                               {"saved": _shown(was), "now": _shown(now)},
+                               {"before": c["before"], "after": c["after"]})
     return invented, genuine, invented_ids
 
 
@@ -373,6 +404,8 @@ def no_invented_change(client, ctx, build=None):
         claimed = len(claimed_ids)
         if claimed:
             problems.append(f"baseline run reported changes on {claimed} deals (ids={_short_ids(claimed_ids)})")
+            for i in claimed_ids[:SHOWN_IDS]:
+                debug.diff(i, "change on a baseline run", [], found[i])
 
         folder = _scratch(ctx, "t9-same")
         changes.save_snapshot(shown, ctx["instance"], _week_before(ctx), folder)
@@ -460,6 +493,22 @@ def next_step_rule(client, ctx, build=None):
         return _infrastructure(e)
 
 
+def _show_step_diffs(ids, checked, truth, as_of):
+    """--debug: for the first few deals behind each task 10 count, what was expected and the step given."""
+    for kind, deal_ids in ids.items():
+        for i in deal_ids[:SHOWN_IDS]:
+            close = truth[i].expected_close_date if i in truth else None
+            if kind == "missing_step":
+                want = {"rule": "close_date_passed", "close": _iso(close), "as_of": as_of.isoformat()}
+            elif kind == "reason_without_date":
+                want = {"reason has": [_iso(close), f"passed {nextstep._days((as_of - close).days)} ago"]}
+            elif kind == "wrong_rule":
+                want = {"rule": "not close_date_passed", "close": _iso(close), "as_of": as_of.isoformat()}
+            else:
+                want = {"rule": "one of nextstep.RULES"}
+            debug.diff(i, kind, want, checked.get(i))
+
+
 def _judge_steps(checked, truth, as_of):
     """Counts for task 10: steps {deal id: step} judged against fresh rows on `as_of`."""
     passed_ids = [i for i in checked if i in truth and truth[i].expected_close_date is not None
@@ -481,6 +530,7 @@ def _judge_steps(checked, truth, as_of):
             ids["wrong_rule"].append(i)
     ids["unknown_rule"] = [i for i, st in checked.items()
                            if not isinstance(st, dict) or st.get("rule") not in nextstep.RULES]
+    _show_step_diffs(ids, checked, truth, as_of)
     # `ids` names the deals behind each count, for the evidence (first few, shortened).
     return {"passed_ids": passed_ids, "missing_step": len(ids["missing_step"]),
             "bad_reason": len(ids["reason_without_date"]), "wrong_rule": len(ids["wrong_rule"]),
@@ -627,7 +677,25 @@ def _no_writes(client, ctx, build, prompt, name):
         problems.append("records changed during a run that asked for writes")
     if changed or added or removed:
         evidence += f"; changed_records={_changed_records(before, after)}"
+        _show_record_diffs(before, after)
     return problems, evidence, mode
+
+
+def _show_record_diffs(before, after):
+    """--debug: for the first few changed, added or removed records, the fields that differ."""
+    import json
+    shown = 0
+    for entity in sorted(before.keys() | after.keys()):
+        b, a = before.get(entity, {}), after.get(entity, {})
+        for k in sorted(b.keys() | a.keys()):
+            if b.get(k) == a.get(k) or shown >= SHOWN_IDS:
+                continue
+            shown += 1
+            was, now = json.loads(b[k]) if k in b else {}, json.loads(a[k]) if k in a else {}
+            fields = sorted(f for f in was.keys() | now.keys() if was.get(f) != now.get(f))
+            debug.diff(f"{entity}:{_short_id(json.loads(k))}", "added" if k not in b else
+                       "removed" if k not in a else "changed",
+                       {f: was.get(f) for f in fields}, {f: now.get(f) for f in fields})
 
 
 def _changed_records(before, after):

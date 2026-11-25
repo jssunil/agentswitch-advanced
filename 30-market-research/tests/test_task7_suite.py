@@ -175,6 +175,25 @@ class AccountFacts(unittest.TestCase):
                 self.assertRegex(r["evidence"], rf"{deal_id}\([^)]*{fact}[^)]*\)", fact)   # d03: "redacted name shown"
             self.assertEqual(r["score"], 0.7, fact)
 
+    def test_debug_shows_the_wrong_values(self):
+        from contextlib import redirect_stderr
+        from brief import debug
+
+        def facts(c, row, as_of):
+            f = good_facts(c, row, as_of)
+            if row.id == "d01":
+                f.update(last_contact={"date": "2026-01-01", "type": "call"})
+            return f
+        debug.ENABLED, err = True, io.StringIO()
+        try:
+            with redirect_stderr(err):
+                r = self.run_task(facts)
+        finally:
+            debug.ENABLED = False
+        self.assertIn('debug: d01 last_contact: want ', err.getvalue())
+        self.assertIn('| got {"date": "2026-01-01", "type": "call"}', err.getvalue())
+        self.assertNotIn("2026-01-01", r["evidence"])
+
     def test_redacted_name_must_not_be_shown(self):
         def facts(c, row, as_of):
             f = good_facts(c, row, as_of)

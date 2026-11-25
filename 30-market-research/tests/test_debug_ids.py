@@ -383,5 +383,81 @@ class SuiteRecordReplay(unittest.TestCase):
             self.assertIn("the recording is of suryodaya", err.getvalue())
 
 
+
+# ---------------------------------------------------------------- want/got values and --keep-workdir (25 Nov)
+
+class WantGot(Base):
+    def tearDown(self):
+        debug.ENABLED = False
+        super().tearDown()
+
+    def _err(self, fn, *a, **kw):
+        err = io.StringIO()
+        with redirect_stderr(err):
+            r = fn(*a, **kw)
+        return r, err.getvalue()
+
+    def test_quiet_without_debug(self):
+        _, err = self._err(tasks_brief.no_invented_change, self.client, self.ctx, build=fake_build(invent=True))
+        self.assertEqual(err, "")
+
+    def test_task9_shows_the_invented_change(self):
+        debug.ENABLED = True
+        r, err = self._err(tasks_brief.no_invented_change, self.client, self.ctx, build=fake_build(invent=True))
+        self.assertFalse(r["passed"])
+        self.assertRegex(err, r'debug: d\d\d change on a baseline run: want \[\] \| got \[\{"after": ".*", "before": "99", "field": "probability"\}\]')
+        self.assertRegex(err, r'debug: d\d\d invented probability change: want \{"now": ".*", "saved": ".*"\} \| got \{"after": ".*", "before": "99"\}')
+        self.assertNotIn("want", r["evidence"])                       # values never reach the evidence
+
+    def test_task10_shows_what_was_expected_and_the_step_given(self):
+        debug.ENABLED = True
+
+        def step(row):
+            if row.id == "d16":
+                return {"rule": "negotiation", "step": "Agree terms", "reason": "In Negotiation"}
+            return nextstep.suggest(row, None, date(2026, 11, 30))
+        _, err = self._err(tasks_brief.next_step_rule, self.client, self.ctx, build=fake_build(step=step))
+        self.assertIn('debug: d16 missing_step: want {"as_of": "2026-11-30", "close": "2026-11-29", '
+                      '"rule": "close_date_passed"} | got {"reason": "In Negotiation", "rule": "negotiation"', err)
+
+    def test_task12_shows_the_changed_fields(self):
+        debug.ENABLED = True
+        _, err = self._err(tasks_brief.brief_read_only, self.client, self.ctx, build=fake_build(sneak=True))
+        self.assertRegex(err, r'debug: Deal:d01 changed: want \{"stage": ".*"\} \| got \{"stage": "closed_won"\}')
+
+    def test_task8_shows_the_seeded_change_it_missed(self):
+        debug.ENABLED = True
+        _, err = self._err(tasks_brief.what_changed, self.client, self.ctx, build=fake_build(hide=True))
+        self.assertRegex(err, r'debug: d\d\d seeded stage change: want \{"after": ".*", "before": "seat30_seeded_stage"\} \| got \[\]')
+        self.assertRegex(err, r"debug: d\d\d seeded value change: want ")
+
+    def test_long_values_are_cut_and_labels_keep_the_entity(self):
+        debug.ENABLED = True
+        err = io.StringIO()
+        with redirect_stderr(err):
+            debug.diff("Activity:1234567890ab", "subject", "x" * 1000, None)
+        self.assertIn("debug: Activity:12345678 subject: want ", err.getvalue())
+        self.assertIn("…", err.getvalue())
+        self.assertLess(len(err.getvalue()), 400)
+
+
+class KeepWorkdir(unittest.TestCase):
+    def test_kept_and_named_only_when_asked(self):
+        import shutil
+        seen = []
+        tasks = [("t", "T", lambda c, ctx: seen.append(ctx["workdir"]) or {"passed": True, "score": 1.0, "evidence": "ok"},
+                  None)]
+        err = io.StringIO()
+        with mock.patch.object(suite, "all_tasks", lambda: tasks), redirect_stderr(err):
+            suite.run_suite(FakeClient([]), "keystone", date(2026, 11, 30))
+            suite.run_suite(FakeClient([]), "keystone", date(2026, 11, 30), keep_workdir=True)
+        removed, kept = seen
+        self.addCleanup(shutil.rmtree, kept, True)
+        self.assertFalse(Path(removed).exists())
+        self.assertTrue(Path(kept).is_dir())
+        self.assertEqual(stat.S_IMODE(os.stat(kept).st_mode), 0o700)
+        self.assertIn(f"scratch folder kept (customer records; delete when done): {kept}", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

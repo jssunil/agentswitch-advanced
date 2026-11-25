@@ -19,6 +19,10 @@ recording.json saying what was recorded), and --replay DIR runs the suite from s
 no platform, no token, the same data every time, in seconds. DIR holds customer records, so it
 must be a folder git ignores (e.g. briefs/recordings/keystone-2026-11-25) or outside the repo.
 
+--keep-workdir keeps the scratch folder the tasks used (their snapshots, including the seeded
+ones) instead of removing it, and prints where it is. It is an owner-only temporary folder
+outside the repository, and it holds customer records: delete it when done.
+
 With --out, the run is also described in <out>.meta.json beside it (results.meta.json): commit,
 login, start and end, and per task its seconds, platform calls and retries. It is a separate file
 so results.json keeps exactly the TASK_FORMAT.md shape.
@@ -73,37 +77,48 @@ def all_tasks():
     return tasks
 
 
-def run_suite(client, instance, as_of, only=None, platform_error=None, timings=None):
+def run_suite(client, instance, as_of, only=None, platform_error=None, timings=None, keep_workdir=False):
     """The TASK_FORMAT.md payload. With `platform_error`, nothing runs and every task says why.
-    `timings` (a dict), if given, gets {task id: {seconds, calls, retries}} for each task run."""
-    results = []
+    `timings` (a dict), if given, gets {task id: {seconds, calls, retries}} for each task run.
+    `keep_workdir` keeps the tasks' scratch folder and prints its path on stderr."""
+    if keep_workdir:
+        workdir = tempfile.mkdtemp(prefix="seat30-suite-")          # 0700; kept for the person debugging
+        print(f"brief.suite: scratch folder kept (customer records; delete when done): {workdir}",
+              file=sys.stderr, flush=True)
+        return _run_tasks(client, instance, as_of, only, platform_error, timings, workdir)
     with tempfile.TemporaryDirectory(prefix="seat30-suite-") as workdir:
-        ctx = {"instance": instance, "as_of": as_of, "workdir": workdir}
-        for task_id, title, fn, missing in all_tasks():
-            if only and task_id not in only:
-                continue
-            if platform_error is not None:
-                r = _infrastructure(f"the platform could not be reached: {platform_error}")
-            elif fn is None:
-                r = _infrastructure(missing)
-            else:
-                debug.step(f"{task_id}: started")
-                started, before = time.monotonic(), stats_of(client)
-                debug.current = task_id
-                try:
-                    r = fn(client, ctx)
-                except Exception as e:      # tasks catch their own errors; this is the last guard
-                    debug.crash(e, task_id)
-                    r = _infrastructure(f"{type(e).__name__}: {e}")
-                finally:
-                    debug.current = ""
-                r = _checked(r)
-                used = _used(before, stats_of(client), time.monotonic() - started)
-                if timings is not None:
-                    timings[f"{instance}:{task_id}"] = used
-                debug.step(f"{task_id}: {'pass' if r['passed'] else 'FAIL'} {r['score']:.2f} in {used['seconds']} s, "
-                           f"{used['calls']} platform calls, {used['retries']} retries")
-            results.append({"id": f"{instance}:{task_id}", "title": title, **r})
+        return _run_tasks(client, instance, as_of, only, platform_error, timings, workdir)
+
+
+def _run_tasks(client, instance, as_of, only, platform_error, timings, workdir):
+    """Run the tasks with `workdir` as their scratch folder."""
+    results = []
+    ctx = {"instance": instance, "as_of": as_of, "workdir": workdir}
+    for task_id, title, fn, missing in all_tasks():
+        if only and task_id not in only:
+            continue
+        if platform_error is not None:
+            r = _infrastructure(f"the platform could not be reached: {platform_error}")
+        elif fn is None:
+            r = _infrastructure(missing)
+        else:
+            debug.step(f"{task_id}: started")
+            started, before = time.monotonic(), stats_of(client)
+            debug.current = task_id
+            try:
+                r = fn(client, ctx)
+            except Exception as e:      # tasks catch their own errors; this is the last guard
+                debug.crash(e, task_id)
+                r = _infrastructure(f"{type(e).__name__}: {e}")
+            finally:
+                debug.current = ""
+            r = _checked(r)
+            used = _used(before, stats_of(client), time.monotonic() - started)
+            if timings is not None:
+                timings[f"{instance}:{task_id}"] = used
+            debug.step(f"{task_id}: {'pass' if r['passed'] else 'FAIL'} {r['score']:.2f} in {used['seconds']} s, "
+                       f"{used['calls']} platform calls, {used['retries']} retries")
+        results.append({"id": f"{instance}:{task_id}", "title": title, **r})
     passed = sum(1 for r in results if r["passed"])
     return {"tasks": results, "summary": f"{instance}: {passed}/{len(results)} tasks passed"}
 
@@ -240,6 +255,8 @@ def main(argv=None):
     ap.add_argument("--only", type=lambda v: {x.strip() for x in v.split(",") if x.strip()},
                     help="comma-separated task ids")
     ap.add_argument("--out", help="write results JSON here (e.g. results.json)")
+    ap.add_argument("--keep-workdir", action="store_true",
+                    help="keep the tasks' scratch folder (snapshots) and print where it is")
     ap.add_argument("--debug", action="store_true",
                     help="on stderr: each task's start, end and time, and the full traceback of any crash")
     source = ap.add_mutually_exclusive_group()
@@ -289,7 +306,7 @@ def main(argv=None):
         write_results(Path(args.record) / RECORDING_META,
                       {"instance": args.instance, "date": as_of.isoformat(),
                        "recorded_at": started.isoformat(timespec="seconds"), "commit": _commit(), "login": login})
-    out = run_suite(client, args.instance, as_of, args.only, platform_error, timings)
+    out = run_suite(client, args.instance, as_of, args.only, platform_error, timings, args.keep_workdir)
     finished = datetime.now(IST)
     if args.out:
         write_results(args.out, out)

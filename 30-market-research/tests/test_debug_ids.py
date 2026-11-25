@@ -420,6 +420,17 @@ class WantGot(Base):
         self.assertIn('debug: d16 missing_step: want {"as_of": "2026-11-30", "close": "2026-11-29", '
                       '"rule": "close_date_passed"} | got {"reason": "In Negotiation", "rule": "negotiation"', err)
 
+    def test_task10_shows_the_rule_trace_for_a_wrong_deal(self):
+        debug.ENABLED = True
+
+        def step(row):
+            if row.id == "d16":
+                return {"rule": "negotiation", "step": "Agree terms", "reason": "In Negotiation"}
+            return nextstep.suggest(row, None, date(2026, 11, 30))
+        _, err = self._err(tasks_brief.next_step_rule, self.client, self.ctx, build=fake_build(step=step))
+        self.assertIn("d16   rule 1 close_date_passed: matched: expected close 2026-11-29 is before 2026-11-30", err)
+        self.assertIn("d16   rule 6 negotiation: not reached, would match: stage is negotiation", err)
+
     def test_task12_shows_the_changed_fields(self):
         debug.ENABLED = True
         _, err = self._err(tasks_brief.brief_read_only, self.client, self.ctx, build=fake_build(sneak=True))

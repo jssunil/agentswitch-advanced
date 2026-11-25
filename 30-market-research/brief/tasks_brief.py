@@ -89,6 +89,7 @@ def _run(client, ctx, folder, build=None, prompt=None):
         return {"baseline": bool(out["baseline"]),
                 "changes": {d["row"]["id"]: list(d.get("changes") or []) for d in out["deals"]},
                 "next_steps": {d["row"]["id"]: d.get("next_step") for d in out["deals"]},
+                "accounts": {d["row"]["id"]: d.get("account") for d in out["deals"]},
                 "shown": [from_dict(d["row"]) for d in out["deals"]], "mode": "full"}
     # Component mode: a fixed, rank-free set of open live deals stands in for the brief's list,
     # and Deepak's modules run on it the way build() will run them (no account facts yet).
@@ -453,7 +454,8 @@ def next_step_rule(client, ctx, build=None):
             checked = {r.id: nextstep.suggest(r, None, as_of) for r in _open(truth.values())}
         else:
             checked = run["next_steps"]
-        judged = _judge_steps(checked, truth, as_of)
+        facts = run.get("accounts") or {}
+        judged = _judge_steps(checked, truth, as_of, facts)
         moved = 0
         if not judged["passed_ids"] and run["mode"] == "full":
             later = sorted(truth[i].expected_close_date for i in checked
@@ -465,7 +467,8 @@ def next_step_rule(client, ctx, build=None):
                 truth = {r.id: r for r in _independent_rows(client)}
                 first_wrong, first_wrong_ids = judged["wrong_rule"], judged["ids"]["wrong_rule"]
                 checked, as_of = rerun["next_steps"], new_day
-                judged = _judge_steps(checked, truth, as_of)
+                facts = rerun.get("accounts") or {}
+                judged = _judge_steps(checked, truth, as_of, facts)
                 judged["wrong_rule"] += first_wrong
                 judged["ids"]["wrong_rule"] = first_wrong_ids + [
                     i for i in judged["ids"]["wrong_rule"] if i not in first_wrong_ids]
@@ -493,8 +496,10 @@ def next_step_rule(client, ctx, build=None):
         return _infrastructure(e)
 
 
-def _show_step_diffs(ids, checked, truth, as_of):
-    """--debug: for the first few deals behind each task 10 count, what was expected and the step given."""
+def _show_step_diffs(ids, checked, truth, as_of, facts=None):
+    """--debug: for the first few deals behind each task 10 count, what was expected, the step
+    given, and how nextstep's rules see the deal (nextstep.explain, with the brief's account facts
+    when the run had them)."""
     for kind, deal_ids in ids.items():
         for i in deal_ids[:SHOWN_IDS]:
             close = truth[i].expected_close_date if i in truth else None
@@ -507,9 +512,14 @@ def _show_step_diffs(ids, checked, truth, as_of):
             else:
                 want = {"rule": "one of nextstep.RULES"}
             debug.diff(i, kind, want, checked.get(i))
+            if debug.ENABLED and i in truth:
+                trace = nextstep.explain(truth[i], (facts or {}).get(i), as_of)["rules"]
+                for n, r in enumerate(trace, 1):
+                    debug.step(f"{debug.current} {_short_id(i)}   rule {n} {r['rule']}: {r['result']}: "
+                               f"{display_text(r['why'])}")
 
 
-def _judge_steps(checked, truth, as_of):
+def _judge_steps(checked, truth, as_of, facts=None):
     """Counts for task 10: steps {deal id: step} judged against fresh rows on `as_of`."""
     passed_ids = [i for i in checked if i in truth and truth[i].expected_close_date is not None
                   and truth[i].expected_close_date < as_of]
@@ -530,7 +540,7 @@ def _judge_steps(checked, truth, as_of):
             ids["wrong_rule"].append(i)
     ids["unknown_rule"] = [i for i, st in checked.items()
                            if not isinstance(st, dict) or st.get("rule") not in nextstep.RULES]
-    _show_step_diffs(ids, checked, truth, as_of)
+    _show_step_diffs(ids, checked, truth, as_of, facts)
     # `ids` names the deals behind each count, for the evidence (first few, shortened).
     return {"passed_ids": passed_ids, "missing_step": len(ids["missing_step"]),
             "bad_reason": len(ids["reason_without_date"]), "wrong_rule": len(ids["wrong_rule"]),

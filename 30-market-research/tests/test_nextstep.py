@@ -182,5 +182,61 @@ class Rules(unittest.TestCase):
             nextstep.suggest(row(), RECENT, None)
 
 
+
+class Explain(unittest.TestCase):
+    """explain() runs the same checks as suggest() and reports every rule (25 Nov)."""
+
+    def results(self, r, facts=RECENT, day=TODAY):
+        return {x["rule"]: x["result"] for x in nextstep.explain(r, facts, day)["rules"]}
+
+    def test_every_rule_in_order_and_the_step_is_suggests(self):
+        r = row(expected_close_date="2026-10-31")
+        out = nextstep.explain(r, RECENT, TODAY)
+        self.assertEqual([x["rule"] for x in out["rules"]], list(nextstep.RULES))
+        self.assertEqual(out["step"], nextstep.suggest(r, RECENT, TODAY))
+        self.assertEqual(out["rules"][0]["result"], "matched")
+        self.assertIn("2026-10-31 is before 2026-11-23", out["rules"][0]["why"])
+
+    def test_rules_after_the_match_say_whether_they_would_match(self):
+        res = self.results(row(expected_close_date="2026-10-31", stage="negotiation"), {"last_contact": None})
+        self.assertEqual(res["close_date_passed"], "matched")
+        self.assertEqual(res["no_recent_contact"], "not reached, would match")
+        self.assertEqual(res["negotiation"], "not reached, would match")
+        self.assertEqual(res["proposal_waiting"], "not reached")
+
+    def test_why_a_rule_did_not_match(self):
+        out = {x["rule"]: x for x in nextstep.explain(row(), None, TODAY)["rules"]}
+        self.assertEqual(out["overdue_activity"]["why"], "no account facts, so open activities are unknown")
+        self.assertEqual(out["no_recent_contact"]["why"], "no account facts, so the last contact is unknown")
+        self.assertIn("on hold", out["proposal_waiting"]["why"])
+        recent = {x["rule"]: x for x in nextstep.explain(row(), RECENT, TODAY)["rules"]}
+        self.assertEqual(recent["no_recent_contact"]["why"], "last contact 2026-11-20, 3 days ago (under 30)")
+
+    def test_a_missing_close_date_does_not_break_the_later_rules(self):
+        out = nextstep.explain(row(expected_close_date=None, stage="negotiation"), RECENT, TODAY)
+        res = {x["rule"]: x["result"] for x in out["rules"]}
+        self.assertEqual(res["fix_record"], "matched")
+        self.assertEqual(res["keep_moving"], "not reached, would match")
+
+    def test_closed_deal(self):
+        out = nextstep.explain(row(stage="closed_won"), RECENT, TODAY)
+        self.assertEqual(out["step"]["rule"], "not_open")
+        self.assertEqual([x["result"] for x in out["rules"]], ["matched"])
+
+    def test_explain_and_suggest_agree_on_many_deals(self):
+        variants = [dict(expected_close_date=c, probability=p, stage=st)
+                    for c in ("2026-10-31", "2026-11-23", "2026-12-31", None)
+                    for p in (0.0, 40.0, 100.0, 150.0)
+                    for st in ("proposal", "negotiation", "qualification")]
+        for facts in (None, RECENT, {"last_contact": None, "open_activities": []},
+                      {**RECENT, "open_activities": [{"id": "a1", "subject": "x", "due_date": "2026-11-01"}]}):
+            for v in variants:
+                r = row(**v)
+                out = nextstep.explain(r, facts, TODAY)
+                matched = [x["rule"] for x in out["rules"] if x["result"] == "matched"]
+                self.assertEqual(out["step"], nextstep.suggest(r, facts, TODAY), v)
+                self.assertEqual(matched, [out["step"]["rule"]], v)
+
+
 if __name__ == "__main__":
     unittest.main()

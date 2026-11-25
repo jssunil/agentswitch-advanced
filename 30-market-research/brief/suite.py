@@ -14,6 +14,11 @@ files go to a temporary folder that is removed afterwards.
 retries), each retry and slow request, any blocked write, the full traceback of any crash
 (brief/debug.py), and a closing platform summary. The evidence lines and results.json don't change.
 
+--record DIR saves every platform request and reply of the run in DIR (calls.jsonl, plus
+recording.json saying what was recorded), and --replay DIR runs the suite from such a recording:
+no platform, no token, the same data every time, in seconds. DIR holds customer records, so it
+must be a folder git ignores (e.g. briefs/recordings/keystone-2026-11-25) or outside the repo.
+
 With --out, the run is also described in <out>.meta.json beside it (results.meta.json): commit,
 login, start and end, and per task its seconds, platform calls and retries. It is a separate file
 so results.json keeps exactly the TASK_FORMAT.md shape.
@@ -31,7 +36,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from . import debug, optional_module
-from .client import EXIT_PLATFORM, Client, McpError, stats_of
+from .client import EXIT_PLATFORM, Client, McpError, RecordingClient, ReplayClient, stats_of
 from .values import display_text
 
 # Suite numbers 1-12 (PLAN.md, "v1 suite (30 Nov): tasks").
@@ -119,13 +124,14 @@ def login_of(client):
         return None
 
 
-def run_meta(client, instance, as_of, started, finished, timings, platform_error, debug_on, login):
+def run_meta(client, instance, as_of, started, finished, timings, platform_error, debug_on, login, source="live"):
     """What was run, for <out>.meta.json. Never the token or the platform address."""
     stats = stats_of(client)
     return {"instance": instance, "date": as_of.isoformat(),
             "started": started.isoformat(timespec="seconds"), "finished": finished.isoformat(timespec="seconds"),
             "seconds": round((finished - started).total_seconds(), 1),
             "commit": _commit(), "login": login, "platform_error": platform_error, "debug": debug_on,
+            "source": source,
             "python": platform.python_version(),
             "platform": {"requests": stats["requests"], "retries": stats["retries"],
                          "waited_seconds": round(stats["waited"], 1), "request_seconds": round(stats["seconds"], 1),
@@ -144,6 +150,33 @@ def _commit():
     except (OSError, subprocess.SubprocessError):
         return None
     return {"head": head, "changed_files": bool(dirty)}
+
+
+RECORDING_META = "recording.json"
+
+
+def git_would_track(folder):
+    """True when `folder` is inside this repository and not ignored by git, so a recording there
+    could be committed. False outside the repository, or where git isn't available."""
+    here = Path(__file__).resolve().parent
+    try:
+        top = subprocess.run(["git", "-C", str(here), "rev-parse", "--show-toplevel"],
+                             capture_output=True, text=True, timeout=10, check=True).stdout.strip()
+        target = Path(folder).resolve()
+        if Path(top).resolve() not in (target, *target.parents):
+            return False
+        ignored = subprocess.run(["git", "-C", top, "check-ignore", "-q", str(target)], timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return ignored.returncode != 0
+
+
+def read_recording_meta(folder):
+    path = Path(folder) / RECORDING_META
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
 
 
 def meta_path(out):
@@ -202,15 +235,32 @@ def _checked(r):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="brief.suite", description="Run the seat 30 suite and write results.json")
     ap.add_argument("--instance", default=os.environ.get("AGENTSWITCH_INSTANCE"), choices=INSTANCES,
-                    required=not os.environ.get("AGENTSWITCH_INSTANCE"))
+                    help="the system (default: AGENTSWITCH_INSTANCE, or the recording's with --replay)")
     ap.add_argument("--date", type=_iso_date, help="the brief's date (default: today in IST)")
     ap.add_argument("--only", type=lambda v: {x.strip() for x in v.split(",") if x.strip()},
                     help="comma-separated task ids")
     ap.add_argument("--out", help="write results JSON here (e.g. results.json)")
     ap.add_argument("--debug", action="store_true",
                     help="on stderr: each task's start, end and time, and the full traceback of any crash")
+    source = ap.add_mutually_exclusive_group()
+    source.add_argument("--record", metavar="DIR", help="save every platform request and reply in DIR (git-ignored)")
+    source.add_argument("--replay", metavar="DIR", help="run from a recording in DIR: no platform, no token")
     args = ap.parse_args(argv)
     debug.ENABLED = args.debug
+    recorded = read_recording_meta(args.replay) if args.replay else {}
+    if args.replay:
+        if not (Path(args.replay) / "calls.jsonl").is_file():
+            ap.error(f"--replay: no recording in {args.replay} (calls.jsonl missing)")
+        if args.instance and recorded.get("instance") and args.instance != recorded["instance"]:
+            ap.error(f"--replay: the recording is of {recorded['instance']}, not {args.instance}")
+        args.instance = recorded.get("instance") or args.instance
+        if args.date is None and recorded.get("date"):
+            args.date = _iso_date(recorded["date"])     # replay on the recorded date unless told otherwise
+    if not args.instance:
+        ap.error("--instance is required (or set AGENTSWITCH_INSTANCE)")
+    if args.record and git_would_track(args.record):
+        ap.error(f"--record: {args.record} is a folder git would track, and a recording holds customer "
+                 "records. Use one git ignores, e.g. briefs/recordings/<instance>-<date>")
     if args.only and args.only - set(PLANNED):
         ap.error(f"unknown task ids: {', '.join(sorted(args.only - set(PLANNED)))}")
     for stream in (sys.stdout, sys.stderr):
@@ -220,21 +270,31 @@ def main(argv=None):
     started = datetime.now(IST)                    # before the first read, so the totals add up
     client, platform_error = None, None
     try:
-        client = Client()
+        if args.replay:
+            client = ReplayClient(args.replay)
+        elif args.record:
+            client = RecordingClient(args.record)
+        else:
+            client = Client()
         # Bug hunt BH-02 (24 Nov): Client() only checks the settings. One read first, so a platform
         # that is down or a rejected token gives exit 3, not twelve task failures and exit 0.
         client.tool_names()
     except McpError as e:
         debug.crash(e, "the first platform read")
         client, platform_error = None, display_text(e)
-    login = login_of(client) if args.out else None
+    login = login_of(client) if (args.out or args.record) else None
     as_of, timings = args.date or today_ist(), {}
+    mode = "replay" if args.replay else "record" if args.record else "live"
+    if args.record and client is not None:
+        write_results(Path(args.record) / RECORDING_META,
+                      {"instance": args.instance, "date": as_of.isoformat(),
+                       "recorded_at": started.isoformat(timespec="seconds"), "commit": _commit(), "login": login})
     out = run_suite(client, args.instance, as_of, args.only, platform_error, timings)
     finished = datetime.now(IST)
     if args.out:
         write_results(args.out, out)
         write_results(meta_path(args.out), run_meta(client, args.instance, as_of, started, finished, timings,
-                                                     platform_error, args.debug, login))
+                                                     platform_error, args.debug, login, mode))
     s = stats_of(client)
     debug.step(f"platform: {s['requests']} requests in {s['seconds']:.1f} s, {s['retries']} retries "
                f"({s['waited']:.0f} s waiting); by tool: "

@@ -5,6 +5,7 @@ its bug hunts and reviews. Only tools on the read allowlist can be called. Anyth
 raises WriteBlocked before a request is sent, so the brief can never change a record.
 Seat 30 has no draft or send path at all, so seat 31's draft tool is not on the list.
 """
+import copy
 import hashlib
 import http.client
 import json
@@ -15,6 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import Counter
+from pathlib import Path
 
 from . import debug
 from .values import display_text, reject_json_constant
@@ -297,6 +299,119 @@ class Client:
 
 EXIT_PLATFORM = 3   # the platform could not be read; 2 is bad options (argparse)
 
+
+
+# ---------------------------------------------------------------- record and replay (--record / --replay)
+#
+# A recording is every request a run made and the reply it got, so a failing run can be
+# reproduced offline: the same data every time, in seconds, with no platform at all. It works at
+# the level of _rpc (one request in, one result or error out), so request ids, streamed replies
+# and retries don't matter, and tasks 11-12, which wrap _rpc, still see every call.
+#
+# A recording holds customer records: the folder is owner-only (0700) and calls.jsonl 0600. The
+# suite refuses a folder that git would track.
+
+RECORDING_FILE = "calls.jsonl"
+
+
+def request_key(method, params):
+    """The same request gives the same key, whatever its JSON-RPC id."""
+    text = json.dumps({"method": method, "params": params}, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
+
+
+def _what(method, params):
+    name = params.get("name") if isinstance(params, dict) else None
+    return f"{method} {name}" if name else method
+
+
+class RecordingClient(Client):
+    """A normal client that also appends each request and its result (or error) to
+    <folder>/calls.jsonl, in the order they happened. A reply identical to the previous reply to
+    the same request is saved as {"same": true}, so repeated list reads don't fill the disk."""
+
+    def __init__(self, folder, base_url=None, token=None, timeout=60):
+        super().__init__(base_url, token, timeout)
+        self.folder = Path(folder)
+        self.folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self.folder, 0o700)
+        self._calls = self.folder / RECORDING_FILE
+        if self._calls.is_symlink():
+            raise McpError(f"{RECORDING_FILE}: a recording must not be written through a symlink")
+        self._last = {}            # request key -> hash of its last recorded reply
+
+    def _rpc(self, method, params):
+        entry = {"key": request_key(method, params), "what": _what(method, params)}
+        try:
+            result = super()._rpc(method, params)
+        except McpError as e:
+            self._append({**entry, "error": type(e).__name__, "message": str(e)})
+            self._last.pop(entry["key"], None)       # a "same" never points at an error
+            raise
+        digest = hashlib.sha256(json.dumps(result, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        if self._last.get(entry["key"]) == digest:
+            self._append({**entry, "same": True})
+        else:
+            self._append({**entry, "result": result})
+        self._last[entry["key"]] = digest
+        return result
+
+    def _append(self, entry):
+        fd = os.open(self._calls, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False, allow_nan=False) + "\n")
+
+
+class ReplayClient(Client):
+    """Answers every request from a recording; never touches the network and needs no token.
+
+    Each request gets the recorded replies for it in order (a list read twice gets its first,
+    then its second reply), and the last one again once they run out. A request the recording
+    doesn't have stops with McpError naming it: the code now asks for something the recorded
+    run didn't."""
+
+    def __init__(self, folder):
+        self.base_url, self.token, self.timeout = "replay:", "", 60
+        self._id, self._sleep, self._try_timeout = 0, time.sleep, None
+        self.stats = new_stats()
+        self.folder = Path(folder)
+        path = self.folder / RECORDING_FILE
+        if not path.is_file():
+            raise McpError(f"replay: no {RECORDING_FILE} in {self.folder}")
+        self._replies, self._served = {}, Counter()
+        with open(path, encoding="utf-8") as f:
+            for n, line in enumerate(f, 1):
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line, parse_constant=reject_json_constant)
+                    replies = self._replies.setdefault(entry["key"], [])
+                    if entry.get("same"):
+                        entry = {**replies[-1], "same": True}      # IndexError: nothing to repeat
+                    replies.append(entry)
+                except (ValueError, KeyError, TypeError, IndexError):
+                    raise McpError(f"replay: {RECORDING_FILE} line {n} can't be read") from None
+
+    def _rpc(self, method, params):
+        what = _what(method, params)
+        key = request_key(method, params)
+        self.stats["requests"] += 1
+        self.stats["by_tool"][(params or {}).get("name") or method] += 1
+        replies = self._replies.get(key)
+        if not replies:
+            raise McpError(f"replay: no recorded reply for {what} (the recorded run never asked for it)")
+        entry = replies[min(self._served[key], len(replies) - 1)]
+        self._served[key] += 1
+        if "error" in entry:
+            raise _REPLAY_ERRORS.get(entry["error"], McpError)(entry.get("message") or what)
+        return copy.deepcopy(entry["result"])
+
+    def _post(self, body):
+        raise McpError("replay: no network")
+
+
+_REPLAY_ERRORS = {"McpError": McpError, "PlatformUnavailable": PlatformUnavailable,
+                  "PaginationError": PaginationError, "UnstablePaginationError": UnstablePaginationError}
 
 def platform_failure(prog, error):
     """One line on stderr and exit 3, instead of a traceback (bug hunt D2). Seat 34's harness

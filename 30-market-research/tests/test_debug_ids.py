@@ -258,5 +258,130 @@ class RunRecord(unittest.TestCase):
         self.assertIn("1 platform calls, 0 retries", err.getvalue())
 
 
+
+# ---------------------------------------------------------------- record and replay (25 Nov)
+
+import os
+import stat
+
+
+class Scripted(client_module.RecordingClient):
+    """A recording client whose platform answers from a script: each Deal.list read returns the
+    next list of deals; a 401 when `reject` is set. No network."""
+    def __init__(self, folder, deal_lists, reject=False):
+        super().__init__(folder, "http://x", "tok-SECRET-123")
+        self.deal_lists, self.reject, self._sleep = list(deal_lists), reject, lambda s: None
+
+    def _post(self, body):
+        msg = json.loads(body)
+        if self.reject:
+            raise urllib.error.HTTPError("http://x/api/mcp", 401, "Unauthorized", {}, None)
+        if msg["method"] == "tools/list":
+            result = {"tools": [{"name": "Deal.list"}]}
+        else:
+            data = self.deal_lists.pop(0) if len(self.deal_lists) > 1 else self.deal_lists[0]
+            result = {"structuredContent": {"data": data, "total": len(data)}}
+        return 200, "application/json", json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": result})
+
+
+class RecordReplay(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.folder = Path(self._tmp.name, "rec")
+
+    def test_replay_gives_the_same_replies_in_order_without_a_network(self):
+        first, second = [{"id": "d01"}], [{"id": "d01"}, {"id": "d02"}]
+        rec = Scripted(self.folder, [first, second])
+        live = [rec.tool_names(), rec.call("Deal.list"), rec.call("Deal.list"), rec.call("Deal.list")]
+        rep = client_module.ReplayClient(self.folder)
+        again = [rep.tool_names(), rep.call("Deal.list"), rep.call("Deal.list"), rep.call("Deal.list")]
+        self.assertEqual(live, again)
+        self.assertEqual(again[1]["data"], first)
+        self.assertEqual(again[2]["data"], second)
+        self.assertEqual(rep.call("Deal.list")["data"], second)      # out of replies: the last one again
+        with self.assertRaises(client_module.McpError):
+            rep._post(b"{}")
+
+    def test_a_repeated_identical_reply_is_stored_once(self):
+        rec = Scripted(self.folder, [[{"id": "d01", "title": "x" * 1000}]])
+        for _ in range(5):
+            rec.call("Deal.list")
+        lines = (self.folder / "calls.jsonl").read_text().splitlines()
+        self.assertEqual(sum(1 for line in lines if '"same": true' in line), 4)
+        self.assertLess(len("".join(lines)), 2000)
+        rep = client_module.ReplayClient(self.folder)
+        self.assertEqual([rep.call("Deal.list")["data"] for _ in range(5)], [[{"id": "d01", "title": "x" * 1000}]] * 5)
+
+    def test_an_error_is_replayed_as_the_same_error(self):
+        rec = Scripted(self.folder, [[]], reject=True)
+        with self.assertRaises(client_module.McpError) as live:
+            rec.call("Deal.list")
+        with self.assertRaises(client_module.McpError) as again:
+            client_module.ReplayClient(self.folder).call("Deal.list")
+        self.assertEqual(str(live.exception), str(again.exception))
+
+    def test_a_request_the_recording_lacks_is_named(self):
+        Scripted(self.folder, [[]]).call("Deal.list")
+        with self.assertRaises(client_module.McpError) as e:
+            client_module.ReplayClient(self.folder).call("Party.list")
+        self.assertIn("no recorded reply for tools/call Party.list", str(e.exception))
+
+    def test_writes_are_still_blocked_and_never_recorded(self):
+        rec = Scripted(self.folder, [[]])
+        with self.assertRaises(client_module.WriteBlocked):
+            rec.call("Deal.update", {"id": "d01"})
+        self.assertFalse((self.folder / "calls.jsonl").exists())
+        with self.assertRaises(client_module.WriteBlocked):
+            client_module.ReplayClient.__new__(client_module.ReplayClient).call("Deal.update")
+
+    def test_recording_is_owner_only_and_holds_no_token(self):
+        Scripted(self.folder, [[{"id": "d01"}]]).call("Deal.list")
+        self.assertEqual(stat.S_IMODE(os.stat(self.folder).st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(os.stat(self.folder / "calls.jsonl").st_mode), 0o600)
+        self.assertNotIn("tok-SECRET-123", (self.folder / "calls.jsonl").read_text())
+
+    def test_a_damaged_recording_is_refused(self):
+        self.folder.mkdir()
+        (self.folder / "calls.jsonl").write_text('{"key": "k", "same": true}\n')
+        with self.assertRaises(client_module.McpError) as e:
+            client_module.ReplayClient(self.folder)
+        self.assertIn("line 1 can't be read", str(e.exception))
+
+
+class SuiteRecordReplay(unittest.TestCase):
+    def test_record_refuses_a_folder_git_would_track(self):
+        with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()) as err:
+            suite.main(["--instance", "keystone", "--record", "brief/never-here"])
+        self.assertIn("a folder git would track", err.getvalue())
+        self.assertFalse(Path(suite.__file__).parent.joinpath("never-here").exists())
+
+    def test_record_and_replay_together_is_a_usage_error(self):
+        with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
+            suite.main(["--instance", "keystone", "--record", "/tmp/a", "--replay", "/tmp/b"])
+
+    def test_replay_without_a_recording_is_a_usage_error(self):
+        with tempfile.TemporaryDirectory() as d, self.assertRaises(SystemExit), redirect_stderr(io.StringIO()) as err:
+            suite.main(["--replay", d])
+        self.assertIn("no recording", err.getvalue())
+
+    def test_replay_takes_instance_and_date_from_the_recording_and_refuses_another_instance(self):
+        with tempfile.TemporaryDirectory() as d:
+            Scripted(Path(d), [[]]).tool_names()
+            Path(d, "recording.json").write_text(json.dumps({"instance": "suryodaya", "date": "2026-11-24"}))
+            seen = {}
+
+            def fake_run_suite(client, instance, as_of, *a, **kw):
+                seen.update(instance=instance, as_of=as_of, replay=isinstance(client, client_module.ReplayClient))
+                return {"tasks": [], "summary": "suryodaya: 0/0 tasks passed"}
+            with mock.patch.object(suite, "run_suite", fake_run_suite), mock.patch("sys.stdout", io.StringIO()), \
+                    mock.patch.dict("os.environ", {}, clear=True):
+                self.assertEqual(suite.main(["--replay", d]), 0)
+            self.assertEqual(seen, {"instance": "suryodaya", "as_of": date(2026, 11, 24), "replay": True})
+            with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()) as err:
+                suite.main(["--replay", d, "--instance", "keystone"])
+            self.assertIn("the recording is of suryodaya", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -17,3 +17,6 @@ crm (read), knowledgebase
 
 ## Working rules
 See the top-level README. Put your agent code, tests and notes in this folder; open a pull request for every change.
+
+## Debugging
+A failed suite run, and what to do first: see [DEBUGGING.md](DEBUGGING.md).

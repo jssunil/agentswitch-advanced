@@ -3,6 +3,7 @@
     python3 -m brief --instance {suryodaya,keystone} [--date YYYY-MM-DD] [--top 10]
                      [--since YYYY-MM-DD] [--out briefs/] [--snapshots DIR] [--prompt TEXT]
                      [--record DIR | --replay DIR] [--debug]
+    python3 -m brief --explain DEAL_ID [--replay DIR] [--date YYYY-MM-DD] [--top 10] [--debug]
 
 Reads AGENTSWITCH_BASE_URL and AGENTSWITCH_TOKEN (and AGENTSWITCH_INSTANCE when --instance is
 not given, as seat 34's harness runs it). Writes <instance>-<date>.json and .md to --out, by
@@ -11,12 +12,15 @@ default the seat's gitignored briefs/ folder, wherever the command is started fr
 --record DIR saves every platform request and reply in DIR (which must be git-ignored, because a
 recording holds customer records); --replay DIR runs from such a recording with no platform or token.
 
+--explain DEAL_ID walks the selection rules, account facts and next-step rules (nextstep.explain) for
+one deal (brief/explain.py). It prints no deal ID list and no AGENT_RESULT; exit 5 means not found.
+
 Standard output: one line per deal shown (rank, deal id, next-step rule), then, as the last line,
 `AGENT_RESULT {...}` for seat 34's harness: the claim ("done", or "refused" when the prompt asked
 for a change, which this brief never makes) and the shown deal ids under `answer.top_deals`.
 
 Exit codes: 0 done; 1 an unexpected error; 2 bad options, or a --since date with no snapshot, or a
-damaged snapshot; 3 the platform could not be read.
+damaged snapshot; 3 the platform could not be read; 5 deal not found (--explain).
 
 An unexpected error prints its traceback, claims "failed" in `AGENT_RESULT`, and ends with one
 plain line, `brief: unexpected error: <type>: <message>`, which seat 34's harness reports as the
@@ -32,7 +36,7 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from . import changes, debug, report
+from . import changes, debug, explain, report
 from .client import RECORDING_FILE, Client, McpError, RecordingClient, ReplayClient, platform_failure
 from .suite import (INSTANCES, IST, RECORDING_META, _commit, _iso_date, git_would_track, login_of,
                     read_recording_meta, write_results)
@@ -82,6 +86,45 @@ def unexpected(error, prog="brief", claim=True):
           file=sys.stderr, flush=True)
 
 
+def _apply_replay_meta(ap, args):
+    if not (Path(args.replay) / RECORDING_FILE).is_file():
+        ap.error(f"--replay: no recording in {args.replay} ({RECORDING_FILE} missing)")
+    recorded = read_recording_meta(args.replay)
+    rec_inst = recorded.get("instance")
+    if rec_inst is not None and rec_inst not in INSTANCES:
+        ap.error(f"--replay: unknown instance in {RECORDING_META}: {display_text(rec_inst)}")
+    if args.instance and rec_inst and args.instance != rec_inst:
+        ap.error(f"--replay: the recording is of {rec_inst}, not {args.instance}")
+    args.instance = args.instance or rec_inst
+    if args.date is None and recorded.get("date"):
+        try:
+            args.date = _iso_date(str(recorded["date"]))
+        except ValueError:
+            ap.error(f"--replay: bad date in {RECORDING_META}: {display_text(recorded['date'])}")
+
+
+def explain_main(ap, args):
+    """--explain: never the deal list or AGENT_RESULT, so it cannot be mistaken for a harness run."""
+    if args.prompt is not None or args.out or args.since is not None or args.snapshots or args.record:
+        ap.error("--explain can't be combined with --prompt, --out, --since, --snapshots or --record")
+    wanted = args.explain.strip()
+    if not wanted:
+        ap.error("--explain needs a deal id")
+    if args.replay:
+        _apply_replay_meta(ap, args)
+    as_of = args.date or report.today_ist()
+    top = args.top or report.DEFAULT_TOP
+    try:
+        client = ReplayClient(args.replay) if args.replay else Client()
+        return explain.run(client, wanted, as_of, top=top)
+    except McpError as e:
+        debug.crash(e, "brief --explain")
+        platform_failure("brief", e)
+    except Exception as e:
+        unexpected(e, prog="brief --explain", claim=False)
+        return 1
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="brief", description="Weekly brief on the largest open deals (read-only)")
     ap.add_argument("--instance", default=os.environ.get("AGENTSWITCH_INSTANCE"), choices=INSTANCES,
@@ -98,6 +141,9 @@ def main(argv=None):
     ap.add_argument("--prompt", help="which deals: a number (\"top 5\") and/or deal ids")
     ap.add_argument("--debug", action="store_true",
                     help="on stderr: retries, slow requests, blocked writes and tracebacks")
+    ap.add_argument("--explain", metavar="DEAL_ID",
+                    help="say why one deal is shown or left out, its account facts and next-step rules; "
+                         "prints customer data (brief/explain.py)")
     source = ap.add_mutually_exclusive_group()
     source.add_argument("--record", metavar="DIR",
                         help="save every platform request and reply in DIR (git-ignored)")
@@ -109,22 +155,12 @@ def main(argv=None):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="replace")
 
+    if args.explain is not None:
+        return explain_main(ap, args)
+
     date_given = args.date is not None
     if args.replay:
-        if not (Path(args.replay) / RECORDING_FILE).is_file():
-            ap.error(f"--replay: no recording in {args.replay} ({RECORDING_FILE} missing)")
-        recorded = read_recording_meta(args.replay)
-        rec_inst = recorded.get("instance")
-        if rec_inst is not None and rec_inst not in INSTANCES:
-            ap.error(f"--replay: unknown instance in {RECORDING_META}: {display_text(rec_inst)}")
-        if args.instance and rec_inst and args.instance != rec_inst:
-            ap.error(f"--replay: the recording is of {rec_inst}, not {args.instance}")
-        args.instance = args.instance or rec_inst
-        if args.date is None and recorded.get("date"):
-            try:
-                args.date = _iso_date(str(recorded["date"]))
-            except ValueError:
-                ap.error(f"--replay: bad date in {RECORDING_META}: {display_text(recorded['date'])}")
+        _apply_replay_meta(ap, args)
     if not args.instance:
         ap.error("--instance is required (or set AGENTSWITCH_INSTANCE)")
     if args.record:

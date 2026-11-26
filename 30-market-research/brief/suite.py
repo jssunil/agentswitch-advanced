@@ -40,7 +40,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from . import debug, optional_module
-from .client import EXIT_PLATFORM, Client, McpError, RecordingClient, ReplayClient, stats_of
+from .client import EXIT_PLATFORM, RECORDING_FILE, Client, McpError, RecordingClient, ReplayClient, stats_of
 from .values import display_text
 
 # Suite numbers 1-12 (PLAN.md, "v1 suite (30 Nov): tasks").
@@ -278,6 +278,8 @@ def main(argv=None):
     if args.record and git_would_track(args.record):
         ap.error(f"--record: {args.record} is a folder git would track, and a recording holds customer "
                  "records. Use one git ignores, e.g. briefs/recordings/<instance>-<date>")
+    if args.record and (Path(args.record) / RECORDING_FILE).exists():
+        ap.error(f"--record: {args.record} already holds a recording ({RECORDING_FILE}); record into a new folder")
     if args.only and args.only - set(PLANNED):
         ap.error(f"unknown task ids: {', '.join(sorted(args.only - set(PLANNED)))}")
     for stream in (sys.stdout, sys.stderr):

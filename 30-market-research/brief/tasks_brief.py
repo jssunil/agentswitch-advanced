@@ -285,10 +285,13 @@ def what_changed(client, ctx, build=None):
     try:
         first = _run(client, ctx, _scratch(ctx, "t8-first"), build)
         shown = first["shown"]
-        stage_deal = next((r for r in shown if r.stage_known), None)
+        # A stage from the deal's own pipeline first; else one judged by its stage key (no usable
+        # pipeline, OBS-30-001), so a list whose top deals all lack a pipeline can still be seeded.
+        stage_deal = (next((r for r in shown if r.stage_known), None)
+                      or next((r for r in shown if stage_usable(r)), None))
         value_deal = next((r for r in shown if r is not stage_deal and r.base_value is not None), None)
         if stage_deal is None or value_deal is None:
-            return _result(False, f"infrastructure: {len(shown)} deals shown, need one with a known "
+            return _result(False, f"infrastructure: {len(shown)} deals shown, need one with a usable "
                                   "stage and another with a base value to seed", mode=first["mode"])
         seeded = []
         for r in shown:

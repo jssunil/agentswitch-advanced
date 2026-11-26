@@ -328,16 +328,21 @@ def _what(method, params):
 class RecordingClient(Client):
     """A normal client that also appends each request and its result (or error) to
     <folder>/calls.jsonl, in the order they happened. A reply identical to the previous reply to
-    the same request is saved as {"same": true}, so repeated list reads don't fill the disk."""
+    the same request is saved as {"same": true}, so repeated list reads don't fill the disk.
+    A folder that already holds a recording is refused: appending a second run to it would mix
+    two runs' replies under one recording.json."""
 
     def __init__(self, folder, base_url=None, token=None, timeout=60):
         super().__init__(base_url, token, timeout)
         self.folder = Path(folder)
-        self.folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.folder, 0o700)
         self._calls = self.folder / RECORDING_FILE
         if self._calls.is_symlink():
             raise McpError(f"{RECORDING_FILE}: a recording must not be written through a symlink")
+        if self._calls.exists():
+            raise McpError(f"{self.folder} already holds a recording ({RECORDING_FILE}); "
+                           "record into a new folder")
+        self.folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self.folder, 0o700)
         self._last = {}            # request key -> hash of its last recorded reply
 
     def _rpc(self, method, params):

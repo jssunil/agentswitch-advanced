@@ -83,6 +83,14 @@ class WhatChanged(Base):
         self.assertFalse(r["passed"])
         self.assertIn("1 unseeded changes reported that the data does not show", r["evidence"])
 
+    def test_deals_with_no_pipeline_can_still_be_seeded(self):
+        # Sunil's review, 26 Nov: when no shown deal has a stage from its own pipeline, the stage
+        # change is seeded on one judged by its stage key (OBS-30-001), not reported as infrastructure.
+        client = FakeClient([deal(i, pipeline=None) for i in range(1, 12)])
+        r = tasks_brief.what_changed(client, self.ctx, build=fake_build())
+        self.assertTrue(r["passed"], r["evidence"])
+        self.assertNotIn("infrastructure", r["evidence"])
+
     def test_another_logins_edit_between_the_runs_is_not_counted(self):
         # Bug hunt R-2: like task 9, a real edit by another login between our reads is genuine
         inner, calls = fake_build(), []

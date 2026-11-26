@@ -60,6 +60,7 @@ python3 -m brief.suite --replay briefs/recordings/keystone-<date> --only next_st
 - Every rerun sees exactly the same data, takes seconds, and can be used with `git bisect` or to try a fix before a live run.
 - If the code now asks for something the recorded run didn't, replay stops with `replay: no recorded reply for …`. Record a new run.
 - A recording holds customer records. `--record` refuses any folder git would track, so keep recordings under `briefs/` (gitignored), and delete them when they're no longer needed.
+- `--record` needs a new or empty folder. It refuses one that already holds a recording (`calls.jsonl`), so two runs are never mixed in one recording.
 
 ## 5. What a run leaves behind
 

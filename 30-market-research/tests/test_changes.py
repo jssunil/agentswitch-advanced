@@ -372,7 +372,7 @@ class Files(Base):
         self.assertIsNone(out["other_login"])
 
     def test_bad_login_is_refused(self):
-        for bad in ("team30c", "u:short", 7, "u:" + "A" * 16):
+        for bad in ("plain-name", "u:short", 7, "u:" + "A" * 16):
             with self.assertRaises(ValueError, msg=repr(bad)):
                 changes.save_snapshot(rows(deal(1)), "keystone", LAST_WEEK, self.folder, login=bad)
         path = changes.save_snapshot(rows(deal(1)), "keystone", LAST_WEEK, self.folder)

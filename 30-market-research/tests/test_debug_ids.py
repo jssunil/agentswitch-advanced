@@ -353,6 +353,20 @@ class RecordReplay(unittest.TestCase):
         with self.assertRaises(client_module.WriteBlocked):
             client_module.ReplayClient.__new__(client_module.ReplayClient).call("Deal.update")
 
+    def test_a_folder_that_holds_a_recording_is_refused(self):
+        # Sunil's review, 26 Nov: a second --record on the same folder would append to calls.jsonl.
+        Scripted(self.folder, [[{"id": "d01"}]]).call("Deal.list")
+        before = (self.folder / "calls.jsonl").read_text()
+        with self.assertRaises(client_module.McpError) as e:
+            Scripted(self.folder, [[{"id": "d02"}]])
+        self.assertIn("already holds a recording", str(e.exception))
+        self.assertEqual((self.folder / "calls.jsonl").read_text(), before)
+        err = io.StringIO()
+        with redirect_stderr(err), self.assertRaises(SystemExit) as stop:
+            suite.main(["--instance", "keystone", "--record", str(self.folder)])
+        self.assertEqual(stop.exception.code, 2)
+        self.assertIn("already holds a recording", err.getvalue())
+
     def test_recording_is_owner_only_and_holds_no_token(self):
         Scripted(self.folder, [[{"id": "d01"}]]).call("Deal.list")
         self.assertEqual(stat.S_IMODE(os.stat(self.folder).st_mode), 0o700)

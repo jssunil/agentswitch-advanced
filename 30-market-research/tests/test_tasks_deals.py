@@ -1,9 +1,11 @@
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from unittest import mock
 from datetime import date
 
-from brief import deals, tasks_deals
+from brief import debug, deals, tasks_deals
 from brief.rows import to_dict
 from tests.fakes import FakeClient, deal
 
@@ -42,6 +44,7 @@ class TasksDealsTest(unittest.TestCase):
         self.client = FakeClient(data())
 
     def tearDown(self):
+        debug.ENABLED = False
         self.tmp.cleanup()
 
     def run_all(self, build=None):
@@ -182,6 +185,35 @@ class TasksDealsTest(unittest.TestCase):
             r = fn(self.client, self.ctx, build=boom)
             self.assertEqual((r["passed"], r["score"]), (False, 0.0), tid)
             self.assertIn("infrastructure: RuntimeError", r["evidence"])
+
+    def test_debug_prints_traceback_and_want_got_only_when_enabled(self):
+        def boom(*a, **k):
+            raise RuntimeError("boom")
+
+        def swap(out):
+            out["deals"][0], out["deals"][1] = out["deals"][1], out["deals"][0]
+
+        quiet = io.StringIO()
+        with redirect_stderr(quiet):
+            tasks_deals.top10_ids(self.client, self.ctx, build=boom)
+            tasks_deals.top10_ids(self.client, self.ctx, build=broken(swap))
+        self.assertEqual(quiet.getvalue(), "")
+
+        debug.ENABLED = True
+        debug.current = "top10_ids"
+        loud = io.StringIO()
+        with redirect_stderr(loud):
+            r_crash = tasks_deals.top10_ids(self.client, self.ctx, build=boom)
+            r_wrong = tasks_deals.top10_ids(self.client, self.ctx, build=broken(swap))
+        debug.current = ""
+        text = loud.getvalue()
+        self.assertIn("debug: traceback in top10_ids:", text)
+        self.assertIn("RuntimeError: boom", text)
+        self.assertIn("debug: top10_ids", text)
+        self.assertIn("want", text)
+        self.assertIn("got", text)
+        self.assertNotIn("Deal ", r_crash["evidence"])
+        self.assertNotIn("Deal ", r_wrong["evidence"])
 
 
 if __name__ == "__main__":

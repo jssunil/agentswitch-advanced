@@ -22,11 +22,12 @@ import copy
 import tempfile
 from decimal import Decimal
 
-from . import optional_module
+from . import debug, optional_module
 from .rows import from_dict, from_record, stage_labels, stage_usable
 from .values import display_text
 
 TOP = 10
+SHOWN_IDS = 3
 SEED = "seat30-seed-"
 CLOSED_STAGES = frozenset({"closed_won", "closed_lost"})
 
@@ -163,6 +164,7 @@ def _result(passed, evidence, mode, score=None):
 
 def _infrastructure(reason):
     if isinstance(reason, Exception):
+        debug.crash(reason)
         reason = f"{type(reason).__name__}: {display_text(reason)[:150]}"
     return {"passed": False, "score": 0.0, "evidence": f"infrastructure: {reason}"}
 
@@ -175,6 +177,27 @@ def _listed_not_shown(brief, ids):
     shown = {r.id for r in brief["shown"]}
     listed = _issue_ids(brief)
     return sorted(ids - listed), sorted(ids & shown)
+
+
+def _diff_listed_not_shown(missing, shown):
+    for i in missing[:SHOWN_IDS]:
+        debug.diff(i, "not_listed", "listed in data_issues", "missing")
+    for i in shown[:SHOWN_IDS]:
+        debug.diff(i, "wrongly_shown", "left out of brief", "shown")
+
+
+def _diff_ranking(want, got):
+    shown = 0
+    for k in sorted(set(want) | set(got), key=lambda x: (x[0] or "", x[1] or "")):
+        w_ids, g_ids = want.get(k, []), got.get(k, [])
+        for i in range(max(len(w_ids), len(g_ids))):
+            w = w_ids[i] if i < len(w_ids) else None
+            g = g_ids[i] if i < len(g_ids) else None
+            if w != g:
+                debug.diff(w or g, f"rank_{i + 1}({k[0]}:{k[1]})", w, g)
+                shown += 1
+                if shown >= SHOWN_IDS:
+                    return
 
 
 # ---------------------------------------------------------------- task 1
@@ -200,6 +223,8 @@ def top10_ids(client, ctx, build=None):
                     f"shown={len(brief['shown'])}; matching_positions={right}; extra_shown={extra}; "
                     f"unexpected_groups={extra_groups}")
         passed = right == positions and not extra
+        if not passed:
+            _diff_ranking(want, got)
         # Extra deals count against the score, so a failure never gets full marks.
         return _result(passed, evidence, brief["mode"], score=round(right / (positions + extra), 2))
     except Exception as e:
@@ -234,6 +259,10 @@ def open_only(client, ctx, build=None):
         shown = {r.id for r in brief["shown"]}
         bad = [i for i in shown if i in closed]
         missing = sorted(no_pipeline - shown)
+        for i in bad[:SHOWN_IDS]:
+            debug.diff(i, "closed_shown", "left out (closed)", "shown")
+        for i in missing[:SHOWN_IDS]:
+            debug.diff(i, "no_pipeline_missing", "shown (open)", "missing")
         real_no_pipeline = sum(1 for g in counted["groups"].values() for r in g
                                if not r.stage_known and not r.id.startswith(SEED))
         evidence = (f"verifier=stage_recount; closed_deals={len(closed)} (2 seeded); shown={len(shown)}; "
@@ -264,6 +293,7 @@ def unknown_stage(client, ctx, build=None):
             return _infrastructure(NOT_BUILT)
         unknown = recount(_rows(seeded))["unknown_stage"]
         missing, shown = _listed_not_shown(brief, unknown)
+        _diff_listed_not_shown(missing, shown)
         evidence = (f"verifier=stage_recount; unknown_stage={len(unknown)} (1 seeded); "
                     f"not_listed={len(missing)}; shown={len(shown)}")
         score = round(1 - len(set(missing) | set(shown)) / len(unknown), 2)
@@ -293,13 +323,18 @@ def currency_safe(client, ctx, build=None):
             return _infrastructure(NOT_BUILT)
         c = recount(_rows(seeded))
         missing, shown = _listed_not_shown(brief, c["currency"])
+        _diff_listed_not_shown(missing, shown)
         want, got = expected_top(c), _by_group(brief["shown"])
         problems = []
         if missing or shown:
             problems.append(f"currency issues not listed={len(missing)}, shown={len(shown)}")
         if got != want:
+            _diff_ranking(want, got)
             problems.append("ranking differs from the base-value recount")
-        mixed = sum(1 for r in brief["shown"] if r.base_currency is None)
+        no_base_cur = [r for r in brief["shown"] if r.base_currency is None]
+        for r in no_base_cur[:SHOWN_IDS]:
+            debug.diff(r.id, "base_currency", "three-letter code", None)
+        mixed = len(no_base_cur)
         if mixed:
             problems.append(f"{mixed} shown deals without a base currency")
         evidence = (f"verifier=base_value_recount; currency_issues={len(c['currency'])} (1 seeded); "
@@ -329,6 +364,7 @@ def zero_value(client, ctx, build=None):
         c = recount(_rows(seeded))
         left_out = c["value_not_positive"] | c["value_unreadable"]
         missing, shown = _listed_not_shown(brief, left_out)
+        _diff_listed_not_shown(missing, shown)
         evidence = (f"verifier=value_recount; value_zero_or_less={len(c['value_not_positive'])} (2 seeded); "
                     f"value_unreadable={len(c['value_unreadable'])}; not_listed={len(missing)}; shown={len(shown)}")
         score = round(1 - len(set(missing) | set(shown)) / len(left_out), 2)
@@ -365,13 +401,17 @@ def tie_break(client, ctx, build=None):
         got = _by_group(first["shown"]).get(key, [])
         problems = []
         if got[:2] != [SEED + "tie-10", SEED + "tie-9"]:
+            debug.diff(SEED + "tie-10", "top_2", [SEED + "tie-10", SEED + "tie-9"], got[:2])
             problems.append("seeded tie not in deal-id order (as text)")
         if [r.id for r in first["shown"]] != [r.id for r in second["shown"]]:
+            debug.diff(key[0] or "deals", "reverse_read",
+                       [r.id for r in first["shown"]], [r.id for r in second["shown"]])
             problems.append("a second run, reading deals in reverse order, showed a different list")
         want_cut = {k: sum(1 for r in g[TOP:] if r.base_value == g[TOP - 1].base_value)
                     for k, g in recount(_rows(SeededClient(client, seeds)))["groups"].items() if len(g) > TOP}
         want_cut = {k: v for k, v in want_cut.items() if v}
         if first.get("tied") != want_cut:
+            debug.diff(f"{key[0]}:{key[1]}", "tied_beyond", want_cut, first.get("tied"))
             problems.append("deals sharing the value at the cut-off not reported as the recount finds them")
         real_ties = sum(1 for g in recount(_rows(client))["groups"].values()
                         for a, b in zip(g, g[1:]) if a.base_value == b.base_value)

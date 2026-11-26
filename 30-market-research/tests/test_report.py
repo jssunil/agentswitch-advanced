@@ -11,7 +11,7 @@ from unittest import mock
 
 from brief import __main__ as cli
 from brief import changes, deals, report
-from tests.fakes import FakeClient, deal
+from tests.fakes import PIPELINES, FakeClient, deal
 
 AS_OF = date(2026, 11, 30)
 
@@ -371,6 +371,57 @@ class CommandLineTest(unittest.TestCase):
     def test_test_runs_never_use_the_official_folder(self):
         self.assertEqual(changes.snapshot_folder(None, date_given=True), changes.TEST_FOLDER)
         self.assertEqual(changes.snapshot_folder(None, prompt="top 3"), changes.TEST_FOLDER)
+
+    def _rpc_post(self, tables):
+        def post(_self, body):
+            msg = json.loads(body.decode("utf-8"))
+            if msg["method"] == "tools/list":
+                res = {"tools": [{"name": f"{e}.list"} for e in tables]}
+            else:
+                entity = msg["params"]["name"].removesuffix(".list")
+                rows = list(tables.get(entity, ()))
+                res = {"structuredContent": {"data": rows, "total": len(rows)}}
+            return 200, "application/json", json.dumps({"jsonrpc": "2.0", "id": msg["id"], "result": res})
+        return post
+
+    def test_record_and_replay_round_trip(self):
+        from brief.client import RecordingClient
+        tables = {"Pipeline": PIPELINES, "Deal": [deal(i) for i in range(1, 5)],
+                  "Party": [{"id": f"pa{i}", "name": f"Party {i}"} for i in range(1, 5)],
+                  "Activity": [], "Note": [], "PartyRelationship": [],
+                  "UserCompany": [{"id": "uc1", "user_id": "u-1"}]}
+        rec_dir = tempfile.mkdtemp()
+        os.rmdir(rec_dir)    # RecordingClient creates it with 0700
+        out1, out2 = tempfile.mkdtemp(), tempfile.mkdtemp()
+        snaps1, snaps2 = tempfile.mkdtemp(), tempfile.mkdtemp()
+        env = {"AGENTSWITCH_BASE_URL": "https://example.invalid", "AGENTSWITCH_TOKEN": "tok-1"}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(RecordingClient, "_post", self._rpc_post(tables)), \
+                redirect_stdout(io.StringIO()) as s1, redirect_stderr(io.StringIO()):
+            code1 = cli.main(["--instance", "keystone", "--date", "2026-11-30", "--record", rec_dir,
+                              "--out", out1, "--snapshots", snaps1])
+        self.assertEqual(code1, 0)
+        self.assertTrue((Path(rec_dir) / "calls.jsonl").is_file())
+        self.assertTrue((Path(rec_dir) / "recording.json").is_file())
+
+        # Replay needs neither --instance, --date, nor environment settings, and writes the same brief.
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                redirect_stdout(io.StringIO()) as s2, redirect_stderr(io.StringIO()):
+            code2 = cli.main(["--replay", rec_dir, "--out", out2, "--snapshots", snaps2])
+        self.assertEqual(code2, 0)
+        self.assertEqual(s1.getvalue(), s2.getvalue())
+        self.assertEqual((Path(out1) / "keystone-2026-11-30.md").read_text(encoding="utf-8"),
+                         (Path(out2) / "keystone-2026-11-30.md").read_text(encoding="utf-8"))
+
+        # Re-recording into the same folder, replaying under another instance, or recording in a git-tracked folder exits 2.
+        for bad in (["--instance", "keystone", "--record", rec_dir],
+                    ["--instance", "suryodaya", "--replay", rec_dir],
+                    ["--replay", tempfile.mkdtemp()],
+                    ["--instance", "keystone", "--record", str(Path(report.__file__).resolve().parent / "tracked-rec")]):
+            with mock.patch.dict(os.environ, env, clear=True), \
+                    self.assertRaises(SystemExit) as e, redirect_stderr(io.StringIO()):
+                cli.main(bad)
+            self.assertEqual(e.exception.code, 2, bad)
 
 
 if __name__ == "__main__":

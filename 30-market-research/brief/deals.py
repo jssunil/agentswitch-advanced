@@ -21,6 +21,7 @@ import re
 from itertools import groupby
 
 from .rows import replace, stage_usable
+from .values import display_text
 
 CLOSED = ("closed_won", "closed_lost")
 
@@ -43,7 +44,7 @@ FIXTURE_RULES = (
 
 def fixture_reason(title):
     """The name of the first fixture rule the title matches, or None."""
-    text = (title or "").strip()
+    text = display_text(title or "").strip()
     for name, pattern in FIXTURE_RULES:
         if pattern.search(text):
             return name
@@ -69,7 +70,7 @@ def left_out_reason(row):
 
 def rank_key(row):
     """Group (company, base currency), then largest base value, then deal id as text."""
-    return (row.company_id or "", row.base_currency, -row.base_value, row.id)
+    return (row.company_id is not None, row.company_id or "", row.base_currency, -row.base_value, row.id)
 
 
 def open_deals(rows):
@@ -94,16 +95,21 @@ def groups(ranked):
     return [(k[0], k[1], list(g)) for k, g in groupby(ranked, key=lambda r: (r.company_id, r.base_currency))]
 
 
+def _positive_int(n):
+    if isinstance(n, bool) or not isinstance(n, int) or n < 1:
+        raise ValueError("n must be at least 1")
+
+
 def top(ranked, n=10):
     """The first n deals of each company and base currency (all of them if there are fewer)."""
-    if n < 1:
-        raise ValueError("n must be at least 1")
+    _positive_int(n)
     return [row for _, _, rows in groups(ranked) for row in rows[:n]]
 
 
 def tied_beyond(ranked, n=10):
     """{(company_id, base_currency): k}: k deals past the cut-off share the last shown deal's
     value, so the deal-id tie-break decided which were shown. Only groups with k > 0."""
+    _positive_int(n)
     out = {}
     for company, currency, rows in groups(ranked):
         if len(rows) > n:

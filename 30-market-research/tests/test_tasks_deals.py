@@ -178,6 +178,12 @@ class TasksDealsTest(unittest.TestCase):
             self.assertFalse(r["passed"])
             self.assertTrue(r["evidence"].startswith("infrastructure") or "infrastructure" in r["evidence"], tid)
 
+    def test_idless_record_in_deal_list_does_not_crash_recount(self):
+        client = FakeClient(data() + [{"title": "missing id"}, {"id": "", "title": "empty id"}])
+        for tid, _, fn in tasks_deals.TASKS:
+            r = fn(client, self.ctx)
+            self.assertEqual((r["passed"], r["score"]), (True, 1.0), (tid, r["evidence"]))
+
     def test_crash_is_infrastructure(self):
         def boom(*a, **k):
             raise RuntimeError("boom")

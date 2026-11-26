@@ -118,6 +118,12 @@ class AccountTest(unittest.TestCase):
         f = facts(row(1), parties=[party("pa1", name="Acme  Ltd")])
         self.assertEqual(f["name"], "Acme  Ltd")
 
+    def test_missing_or_bad_as_of_raises_value_error(self):
+        for bad in (None, "", "not-a-date", "2026-13-40"):
+            with self.assertRaises(ValueError):
+                accounts.facts(None, row(1), bad, data={"parties": {}, "activities": [], "notes": [],
+                                                        "relationships": [], "rows": None})
+
 
 class ContactsNotesDealsTest(unittest.TestCase):
     def test_contacts_deal_contact_first_then_linked_people(self):

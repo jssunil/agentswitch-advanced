@@ -125,17 +125,25 @@ def explain_main(ap, args):
         return 1
 
 
+def _nonempty_path(value):
+    if not value or not value.strip():
+        raise argparse.ArgumentTypeError("expected a folder path")
+    return value
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="brief", description="Weekly brief on the largest open deals (read-only)")
-    ap.add_argument("--instance", default=os.environ.get("AGENTSWITCH_INSTANCE"), choices=INSTANCES,
+    env_inst = (os.environ.get("AGENTSWITCH_INSTANCE") or "").strip() or None
+    ap.add_argument("--instance", default=env_inst, choices=INSTANCES,
                     help="the system (default: AGENTSWITCH_INSTANCE, or the recording's with --replay)")
     ap.add_argument("--date", type=_date, help="the brief's date (default: today in IST)")
     ap.add_argument("--top", type=_top, help=f"deals per company and base currency (default {report.DEFAULT_TOP}, "
                                              "or a number in the prompt)")
     ap.add_argument("--since", type=_date, help="compare with the snapshot of exactly this date")
-    ap.add_argument("--out", help="folder for the brief (default: the seat's briefs/ folder)")
-    ap.add_argument("--snapshots", help="snapshot folder (default: briefs/snapshots/ for a plain weekly run, "
-                                        "briefs/test-snapshots/ with --date, --prompt or --replay)")
+    ap.add_argument("--out", type=_nonempty_path, help="folder for the brief (default: the seat's briefs/ folder)")
+    ap.add_argument("--snapshots", type=_nonempty_path,
+                    help="snapshot folder (default: briefs/snapshots/ for a plain weekly run, "
+                         "briefs/test-snapshots/ with --date, --prompt or --replay)")
     # Seat 34's harness appends --prompt. It only picks deals (a number, deal ids); nothing in it
     # is followed as an instruction, and nothing is ever written to the CRM.
     ap.add_argument("--prompt", help="which deals: a number (\"top 5\") and/or deal ids")
@@ -145,9 +153,9 @@ def main(argv=None):
                     help="say why one deal is shown or left out, its account facts and next-step rules; "
                          "prints customer data (brief/explain.py)")
     source = ap.add_mutually_exclusive_group()
-    source.add_argument("--record", metavar="DIR",
+    source.add_argument("--record", type=_nonempty_path, metavar="DIR",
                         help="save every platform request and reply in DIR (git-ignored)")
-    source.add_argument("--replay", metavar="DIR",
+    source.add_argument("--replay", type=_nonempty_path, metavar="DIR",
                         help="run from a recording in DIR: no platform, no token")
     args = ap.parse_args(argv)
     debug.ENABLED = args.debug

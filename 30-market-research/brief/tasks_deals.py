@@ -66,9 +66,19 @@ def expected_top(counted, n=TOP):
     return {k: [r.id for r in g[:n]] for k, g in counted["groups"].items()}
 
 
+def _rows_from(raw, pipelines):
+    labels = stage_labels(pipelines)
+    rows = []
+    for r in raw:
+        try:
+            rows.append(from_record(r, labels))
+        except ValueError:
+            continue
+    return rows
+
+
 def _rows(client):
-    labels = stage_labels(client.list_all("Pipeline"))
-    return [from_record(r, labels) for r in client.list_all("Deal")]
+    return _rows_from(client.list_all("Deal"), client.list_all("Pipeline"))
 
 
 # ---------------------------------------------------------------- seeding (in memory only)
@@ -96,14 +106,13 @@ def _template(client):
     """(raw record, parsed row, counted) for the largest eligible open deal: the seeds copy its
     company, pipeline, open stage and currencies. None when there is no eligible deal."""
     raw = client.list_all("Deal")
-    labels = stage_labels(client.list_all("Pipeline"))
-    rows = [from_record(r, labels) for r in raw]
+    rows = _rows_from(raw, client.list_all("Pipeline"))
     counted = recount(rows)
     eligible = [r for g in counted["groups"].values() for r in g]
     if not eligible:
         return None
     best = max(eligible, key=lambda r: (r.base_value, r.id))
-    record = next(r for r in raw if str(r.get("id")) == best.id)
+    record = next(r for r in raw if isinstance(r, dict) and str(r.get("id")) == best.id)
     return record, best, counted
 
 

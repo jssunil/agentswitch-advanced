@@ -52,9 +52,11 @@ def load(client, rows=None):
 def facts(client, row, as_of, data=None):
     """The account facts for one deal on `as_of` (a date). `data` is load()'s result; without it
     the lists are read here (fine for one deal, slow for many)."""
+    as_of = business_date(as_of)
+    if as_of is None:
+        raise ValueError("a date is needed")
     if data is None:
         data = load(client)
-    as_of = business_date(as_of)
     party = data["parties"].get(row.party_id) if row.party_id else None
     found = party is not None
     hidden = set(party.get("_redacted_fields") or ()) if found else set()

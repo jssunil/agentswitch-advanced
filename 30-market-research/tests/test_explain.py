@@ -120,6 +120,18 @@ class ExplainWalkTest(unittest.TestCase):
         self.assertIn("Selection verdict (top 10): CLOSED", text)
         self.assertIn("[matched] not_open:", text)
 
+    def test_uppercase_uuid_and_bad_date_or_top(self):
+        c = sample_client()
+        out = io.StringIO()
+        self.assertEqual(explain.run(c, "DEADBEEF-1111-2222-3333-444444444444", AS_OF, out=out), 0)
+        self.assertIn("exact id", out.getvalue())
+        for bad_date in (None, "", "bad"):
+            with self.assertRaises(ValueError):
+                explain.run(c, "d12", bad_date, out=io.StringIO())
+        for bad_top in (0, 101, True, False):
+            with self.assertRaises(ValueError):
+                explain.run(c, "d12", AS_OF, top=bad_top, out=io.StringIO())
+
 
 class ExplainCliTest(unittest.TestCase):
     def tearDown(self):

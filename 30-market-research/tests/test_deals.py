@@ -103,8 +103,20 @@ class GroupsTest(unittest.TestCase):
         self.assertEqual(len(deals.top(ranked, 10)), 2)
 
     def test_top_needs_positive_n(self):
-        with self.assertRaises(ValueError):
-            deals.top([], 0)
+        for bad in (0, -1, False, True, 1.5, "3"):
+            with self.assertRaises(ValueError):
+                deals.top([], bad)
+            with self.assertRaises(ValueError):
+                deals.tied_beyond([], bad)
+
+    def test_none_and_empty_company_ids_do_not_split_groups(self):
+        from brief.rows import replace
+        base = rows(deal(1, company_id=None, pipeline=None), deal(2, company_id="c1"),
+                    deal(3, company_id=None, pipeline=None))
+        mixed = [base[0], replace(base[1], company_id=""), base[2]]
+        ranked, _ = deals.open_deals(mixed)
+        keys = [(c, cur) for c, cur, _ in deals.groups(ranked)]
+        self.assertEqual(len(keys), len(set(keys)))
 
     def test_tied_beyond_cut_off(self):
         records = [deal(i, _base_value=500 if i >= 3 else 100 * i) for i in range(1, 7)]
@@ -135,6 +147,8 @@ class FixtureTest(unittest.TestCase):
     def test_fixtures_are_ranked_and_flagged(self):
         ranked, _ = deals.open_deals(rows(deal(1), deal(2, title="T6-probe")))
         self.assertEqual([(r.id, r.fixture_flag) for r in ranked], [("d02", True), ("d01", False)])
+        self.assertEqual(deals.fixture_reason("\ufeffT9-probe"), "probe prefix")
+        self.assertEqual(deals.fixture_reason("[team99-\u200btest]"), "test marker")
 
 
 if __name__ == "__main__":

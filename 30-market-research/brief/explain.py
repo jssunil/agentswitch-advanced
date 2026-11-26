@@ -12,6 +12,7 @@ For a person debugging: prints customer data on stdout, writes no snapshot or br
 prints the deal ID list or AGENT_RESULT. Exit 0 when found, 5 when not found (or ambiguous prefix),
 2 on bad options, 3 when the platform or recording cannot be read.
 """
+import re
 import sys
 
 from . import accounts, deals, nextstep, report
@@ -21,6 +22,20 @@ from .values import business_date, display_text, money_text
 
 EXIT_NOT_FOUND = 5
 PREFIX_MIN = 4
+_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+
+
+def _require_day(value):
+    day = business_date(value)
+    if day is None:
+        raise ValueError("a date is needed")
+    return day
+
+
+def _require_top(top):
+    if isinstance(top, bool) or not isinstance(top, int) or not 1 <= top <= report.MAX_TOP:
+        raise ValueError(f"top must be a whole number from 1 to {report.MAX_TOP}")
+    return top
 
 
 def _one_line(value, empty="(none)"):
@@ -37,13 +52,19 @@ def _money_pair(amount, currency):
 
 
 def find_deal(rows, wanted):
-    """(row or None, matches, how). Exact id match wins; otherwise a unique prefix of 4+ chars
-    (tasks_brief shortens deal ids to 8 characters in failure evidence)."""
+    """(row or None, matches, how). Exact id match wins; then a case-insensitive UUID match;
+    otherwise a unique prefix of 4+ chars (tasks_brief shortens deal ids to 8 characters)."""
     exact = [r for r in rows if r.id == wanted]
     if exact:
         return exact[0], exact, "exact id"
+    if _UUID.match(wanted):
+        ci = [r for r in rows if r.id.lower() == wanted.lower()]
+        if ci:
+            return ci[0], ci, "exact id"
     if len(wanted) >= PREFIX_MIN:
         pref = [r for r in rows if r.id.startswith(wanted)]
+        if not pref:
+            pref = [r for r in rows if r.id.lower().startswith(wanted.lower())]
         if len(pref) == 1:
             return pref[0], pref, f"id prefix {_one_line(wanted)}"
         if len(pref) > 1:
@@ -157,7 +178,7 @@ def walk_selection(row, all_rows, top=report.DEFAULT_TOP):
 
 def describe_deal(row, how, all_rows, acct, as_of, top=report.DEFAULT_TOP):
     """Lines of plain, control-safe text explaining `row`."""
-    as_of = business_date(as_of)
+    as_of, top = _require_day(as_of), _require_top(top)
     steps, walked, actual, info, deal_issues = walk_selection(row, all_rows, top)
     acct_issues = [i["issue"] for i in accounts.issues(row, acct)] if actual == "shown" else []
     fixture = deals.fixture_reason(row.title)
@@ -224,7 +245,7 @@ def describe_deal(row, how, all_rows, acct, as_of, top=report.DEFAULT_TOP):
 def run(client, wanted, as_of, top=report.DEFAULT_TOP, out=None):
     """Explain `wanted` on `out` (default stdout) and return the exit code."""
     out = out or sys.stdout
-    as_of = business_date(as_of)
+    as_of, top = _require_day(as_of), _require_top(top)
     labels = stage_labels(client.list_all("Pipeline"))
     rows = []
     for record in client.list_all("Deal"):

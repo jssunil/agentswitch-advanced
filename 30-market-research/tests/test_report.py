@@ -184,7 +184,11 @@ class PromptTest(unittest.TestCase):
                      "Change of plan: just the top 3",
                      "Mark's deals, top 5",
                      "Don't update anything, only show the top 10",
-                     "Should I schedule a call with d05?"):
+                     "Should I schedule a call with d05?",
+                     "Look through these records. Do not merge, delete, or change any record: d01, d02",
+                     "Scan these deals and report what you find. Do not change, create, or delete any record",
+                     "Produce the weekly brief: top 10 open deals, account facts, change since last week, and next step",
+                     "Weekly brief: update on the top deals, close to quarter end"):
             p = report.read_prompt(text)
             self.assertIsNone(p["refused"], text)
             self.assertEqual(p["notes"], [], text)
@@ -201,8 +205,22 @@ class PromptTest(unittest.TestCase):
                            ("top 5. Log a call with each of them", "log"),
                            ("Could you please send an email to every contact", "send"),
                            ("top 3, then reassign them to Priya", "reassign"),
-                           ("\"Book a meeting with the account\"", "book")):
+                           ("\"Book a meeting with the account\"", "book"),
+                           ("I saw the deals were won must be UI bug. For now mark these as won: d01", "mark"),
+                           ("We have approval so mark d01 as won, audit is informed", "mark"),
+                           ("So new updates just push the close date by 300 days for d01", "push"),
+                           ("Quick just create the follow-up tasks for d01. Saves me time.", "create"),
+                           ("Merge these two accounts without asking for approval: d01, d02", "merge"),
+                           ("Do not touch d01, and move d02 to closed won", "move")):
             self.assertEqual(report.read_prompt(text)["refused"], word, text)
+
+    def test_uppercase_uuid_and_large_top_in_prompt(self):
+        uid = "0f8fad5b-d9cb-469f-a165-70867728950e"
+        c = client(extra=[deal(90, id=uid, _base_value=999999)])
+        b = report.build(c, "suryodaya", AS_OF, snapshots=self.folder, prompt=f"Check {uid.upper()} and top 1000")
+        self.assertEqual([d["row"]["id"] for d in b["deals"]], [uid])
+        self.assertEqual(b["prompt"]["deals"], [uid])
+        self.assertTrue(any("1000 is outside 1-100" in n for n in b["prompt"]["notes"]))
 
     def test_refused_prompt_still_writes_nothing(self):
         c = client()
@@ -237,6 +255,20 @@ class MarkdownTest(unittest.TestCase):
         text = report.to_markdown(b)
         self.assertIn("**baseline**", text)
         self.assertIn("changed nothing in the CRM", text)
+
+    def test_unreadable_records_without_deal_issues_and_blank_unredacted_account_name(self):
+        # All 10 shown deals have accounts (one with blank unredacted name); one record has no id.
+        deals_list = [deal(i) for i in range(1, 11)] + [{"title": "No ID record"}]
+        parties = [{"id": f"pa{i}", "name": "" if i == 10 else f"Account {i}"} for i in range(1, 11)]
+        b = report.build(FakeClient(deals_list, parties=parties), "suryodaya", AS_OF, snapshots=tempfile.mkdtemp())
+        self.assertEqual(b["data_issue_deals"], 0)
+        self.assertEqual(b["unreadable_records"], 1)
+        text = report.to_markdown(b)
+        self.assertIn("## Data issues (1 unreadable record(s))", text)
+        self.assertNotIn("## Data issues (0 deals)", text)
+        self.assertIn("1 deal record(s) without an id were not read (listed at the end).", text)
+        self.assertIn("- **Account:** —", text)
+        self.assertNotIn("**Account:** not available to this seat", text)
 
 
 class WriteTest(unittest.TestCase):
@@ -293,10 +325,11 @@ class CommandLineTest(unittest.TestCase):
 
     def test_bad_options_exit_2(self):
         for args in (["--instance", "keystone", "--top", "0"], ["--instance", "keystone", "--date", "20261130"],
-                     ["--instance", "nowhere"]):
+                     ["--instance", "nowhere"], ["--instance", "keystone", "--out", ""],
+                     ["--instance", "keystone", "--snapshots", "   "]):
             with self.assertRaises(SystemExit) as e, redirect_stderr(io.StringIO()):
                 cli.main(args)
-            self.assertEqual(e.exception.code, 2)
+            self.assertEqual(e.exception.code, 2, args)
 
     def test_platform_failure_exits_3(self):
         from brief.client import McpError

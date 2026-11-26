@@ -37,34 +37,47 @@ OTHER_LOGIN_LINE = ("compared with a snapshot taken by another login: some chang
                     "differences in what each login can see")
 
 # --prompt: what it can pick, and the words that ask for a change (never followed).
-_TOP = re.compile(r"\btop\s+(\d{1,3})\b|\b(\d{1,3})\s+(?:largest|biggest|top)\b", re.IGNORECASE)
+_TOP = re.compile(r"\btop\s+(\d+)\b|\b(\d+)\s+(?:largest|biggest|top)\b", re.IGNORECASE)
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 # A change word counts only as an instruction: the first word of a sentence or clause, after any
-# polite lead-in ("please", "can you", "go ahead and"...). So "Move these to won", "...and log a
-# call" and "Can you mark D-2 as won?" are refused, while a noun ("any change in stage", "the call
-# log", "behind schedule"), a question ("what should I close first?") or a negation ("Do not change
-# anything") is not: none of them starts a clause with the verb.
-_CHANGE_VERBS = frozenset({"move", "mark", "log", "update", "change", "edit", "create", "delete", "remove",
+# polite lead-in ("please", "can you", "for now", "go ahead and"...). So "Move these to won",
+# "...and log a call" and "Can you mark D-2 as won?" are refused, while a noun ("any change in stage",
+# "change since last week", "the call log"), a question ("what should I close first?") or a negated
+# list ("Do not merge, delete, or change any record") is not.
+_CHANGE_VERBS = frozenset({"move", "mark", "log", "update", "change", "edit", "modify", "set", "push",
+                           "create", "delete", "remove", "cancel", "merge",
                            "send", "assign", "reassign", "schedule", "book", "close"})
-_CLAUSE_BREAK = re.compile(r"[.;:!?,\n]+|\b(?:and|then|also|but)\b", re.IGNORECASE)
-_LEAD_IN = re.compile(r"^(?:please|kindly|just|now|ok(?:ay)?|go ahead and|let'?s|let us|"
-                      r"(?:can|could|would|will) you(?: please)?|"
-                      r"i(?: want| need| would like|'d like) you to)\b\s*", re.IGNORECASE)
+_NEGATED_VERBS = re.compile(
+    r"\b(?:do\s+not|don['’]?t|never|without|not\s+to)\s+(?:ever\s+)?"
+    r"[a-z]+(?:ing)?(?:\s*,\s*(?:(?:or|and)\s+)?[a-z]+(?:ing)?)*(?:\s+(?:or|and)\s+[a-z]+(?:ing)?)?\b",
+    re.IGNORECASE,
+)
+_CLAUSE_BREAK = re.compile(r"[.;:!?,\n]+|\b(?:and|then|also|but|so)\b", re.IGNORECASE)
+_LEAD_IN = re.compile(
+    r"^(?:please|kindly|just|now|for now|right now|quick(?:ly)?|ok(?:ay)?|hey|hi|well|actually|first|"
+    r"new updates?|go ahead and|let'?s|let us|"
+    r"(?:can|could|would|will) you(?: please)?|"
+    r"i(?: want| need| would like|'d like) you to)\b\s*",
+    re.IGNORECASE,
+)
 # Clause starts that use a change word without asking to change a record.
 _NOT_A_CHANGE = re.compile(
-    r"^(?:update|send|brief)\s+(?:me|us)\b"       # asks for information: "update me on..."
-    r"|^close\s+dates?\b"                           # the field: "close date first"
-    r"|^[a-z]+\s+of\b"                              # a noun: "change of plan", "log of calls"
-    r"|^[a-z]+['’]s\b"                              # a name: "Mark's deals"
+    r"^(?:update|send|brief)\s+(?:me|us|on)\b"       # asks for information: "update me on...", "update on..."
+    r"|^close\s+(?:dates?|to)\b"                     # the field or distance: "close date first", "close to 10M"
+    r"|^change\s+(?:in|since|from|between)\b"        # a noun phrase: "change in stage", "change since last week"
+    r"|^[a-z]+\s+of\b"                               # a noun: "change of plan", "log of calls", "set of deals"
+    r"|^[a-z]+['’]s\b"                               # a name: "Mark's deals"
     r"|^(?:remove|hide|drop)\b.*\bfrom\s+(?:the|this|my)\s+(?:list|brief|report|table|summary)\b",
-    re.IGNORECASE)
+    re.IGNORECASE,
+)
 # What a deal id looks like on the platform, to report one that is named but not found.
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 
 
 def change_request(text):
     """The first change word used as an instruction in `text`, lower case, or None."""
-    for clause in _CLAUSE_BREAK.split(str(text or "")):
+    cleaned = _NEGATED_VERBS.sub("keep", str(text or ""))
+    for clause in _CLAUSE_BREAK.split(cleaned):
         clause = clause.strip().lstrip("\"'“”‘’([").strip()
         while True:
             shorter = _LEAD_IN.sub("", clause, count=1)
@@ -98,9 +111,12 @@ def read_prompt(prompt, deal_ids=()):
         else:
             out["notes"].append(f"a top of {n} is outside 1-{MAX_TOP}; the default is used")
     known = set(deal_ids)
+    uuid_by_lower = {d.lower(): d for d in deal_ids if _UUID.match(d)}
     for token in _TOKEN.findall(text):
-        if (token in known or _UUID.match(token)) and token not in out["deals"]:
-            out["deals"].append(token)
+        resolved = token if token in known else (uuid_by_lower.get(token.lower(), token)
+                                                 if _UUID.match(token) else None)
+        if resolved is not None and resolved not in out["deals"]:
+            out["deals"].append(resolved)
     w = change_request(text)
     if w:
         out["refused"] = w
@@ -286,8 +302,13 @@ def _header(b):
             out.append(f"- Request: {md(note)}.")
     out.append(f"- Top {b['top']} per company and base currency; values are in the base currency, never "
                "added across currencies.")
-    if b["data_issue_deals"]:
-        out.append(f"- {b['data_issue_deals']} deals have data issues (listed at the end).")
+    if b["data_issue_deals"] or b["unreadable_records"]:
+        parts = []
+        if b["data_issue_deals"]:
+            parts.append(f"{b['data_issue_deals']} deals have data issues")
+        if b["unreadable_records"]:
+            parts.append(f"{b['unreadable_records']} deal record(s) without an id were not read")
+        out.append(f"- {'; '.join(parts)} (listed at the end).")
     return out
 
 
@@ -306,7 +327,8 @@ def _deal_detail(b, d):
     out = [f"### {d['rank']}. {md(r['title'])}", ""]
     if a.get("found"):
         place = ", ".join(md(x) for x in (a.get("city"), a.get("state")) if x)
-        facts = [f"**Account:** {md(a.get('name'), 'not available to this seat')}"
+        acct_empty = "not available to this seat" if "name" in (a.get("redacted") or ()) else "—"
+        facts = [f"**Account:** {md(a.get('name'), acct_empty)}"
                  + (f" ({md(a.get('type'))})" if a.get("type") else "") + (f", {place}" if place else "")]
         if a.get("credit_limit") is not None:
             facts.append(f"credit limit {money_text(a['credit_limit'])} {md(a.get('currency'), '')}".rstrip())
@@ -364,7 +386,12 @@ def _dropped(b):
 def _issues(b):
     if not b["data_issues"] and not b["unreadable_records"]:
         return []
-    out = ["", f"## Data issues ({b['data_issue_deals']} deals)", ""]
+    counts = []
+    if b["data_issue_deals"] or not b["unreadable_records"]:
+        counts.append(f"{b['data_issue_deals']} deals")
+    if b["unreadable_records"]:
+        counts.append(f"{b['unreadable_records']} unreadable record(s)")
+    out = ["", f"## Data issues ({', '.join(counts)})", ""]
     if b["left_out"]:
         out.append("Left out of the ranking: " + "; ".join(f"{md(k)}: {v}" for k, v in b["left_out"].items()) + ".")
         out.append("")
@@ -384,7 +411,7 @@ def write(brief, markdown, out=None):
     """Write <instance>-<date>.json and .md (owner-only) to `out`, default the seat's gitignored
     briefs/ folder (anchored to the seat folder, like the snapshots). Returns the two paths."""
     folder = Path(out) if out else BRIEFS_FOLDER
-    folder.mkdir(parents=True, exist_ok=True)
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     stem = f"{changes._instance(brief['instance'])}-{_day(brief['date']).isoformat()}"
     encoded = json.dumps(brief, indent=1, ensure_ascii=False, allow_nan=False)
     paths = []

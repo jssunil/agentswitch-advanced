@@ -90,6 +90,8 @@ def _apply_replay_meta(ap, args):
     if not (Path(args.replay) / RECORDING_FILE).is_file():
         ap.error(f"--replay: no recording in {args.replay} ({RECORDING_FILE} missing)")
     recorded = read_recording_meta(args.replay)
+    if not isinstance(recorded, dict):
+        recorded = {}
     rec_inst = recorded.get("instance")
     if rec_inst is not None and rec_inst not in INSTANCES:
         ap.error(f"--replay: unknown instance in {RECORDING_META}: {display_text(rec_inst)}")

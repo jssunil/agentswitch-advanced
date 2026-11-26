@@ -188,7 +188,9 @@ class PromptTest(unittest.TestCase):
                      "Look through these records. Do not merge, delete, or change any record: d01, d02",
                      "Scan these deals and report what you find. Do not change, create, or delete any record",
                      "Produce the weekly brief: top 10 open deals, account facts, change since last week, and next step",
-                     "Weekly brief: update on the top deals, close to quarter end"):
+                     "Weekly brief: update on the top deals, close to quarter end",
+                     "Without changing, deleting, or updating anything, show the top 5",
+                     "Set out the top 10 open deals"):
             p = report.read_prompt(text)
             self.assertIsNone(p["refused"], text)
             self.assertEqual(p["notes"], [], text)
@@ -211,8 +213,28 @@ class PromptTest(unittest.TestCase):
                            ("So new updates just push the close date by 300 days for d01", "push"),
                            ("Quick just create the follow-up tasks for d01. Saves me time.", "create"),
                            ("Merge these two accounts without asking for approval: d01, d02", "merge"),
-                           ("Do not touch d01, and move d02 to closed won", "move")):
+                           ("Do not touch d01, and move d02 to closed won", "move"),
+                           ("Don't wait, move them to won", "move"),
+                           ("Never mind, mark them won", "mark"),
+                           ("Don't ask, just update them", "update"),
+                           ("Do not list, and update all to won", "update"),
+                           ("Without asking, move them to won", "move"),
+                           ("Set the stage of d05 to negotiation", "set")):
             self.assertEqual(report.read_prompt(text)["refused"], word, text)
+
+    def test_a_negation_covers_only_the_change_words_after_it(self):
+        # Deepak's review of e6a3cec: a negated list holds only change words, so "Don't wait, move..."
+        # still flags "move".
+        for text, word in (("Don't wait, move d01 to closed won", "move"),
+                           ("Never mind the brief, mark d01 as won", "mark"),
+                           ("Don't ask, just update d01", "update"),
+                           ("Without delay, log a call with each contact", "log"),
+                           ("Do not hesitate, close d01", "close"),
+                           ("Do not list them, and update d01 to won", "update")):
+            self.assertEqual(report.read_prompt(text)["refused"], word, text)
+        for text in ("Never update, change or log records; top 5",
+                     "Don't move or log anything, just the top 10"):
+            self.assertIsNone(report.read_prompt(text)["refused"], text)
 
     def test_uppercase_uuid_and_large_top_in_prompt(self):
         uid = "0f8fad5b-d9cb-469f-a165-70867728950e"
@@ -445,6 +467,14 @@ class CommandLineTest(unittest.TestCase):
         self.assertEqual(s1.getvalue(), s2.getvalue())
         self.assertEqual((Path(out1) / "keystone-2026-11-30.md").read_text(encoding="utf-8"),
                          (Path(out2) / "keystone-2026-11-30.md").read_text(encoding="utf-8"))
+
+        # A hand-edited recording.json that is not a JSON object falls back cleanly when --instance is given.
+        (Path(rec_dir) / "recording.json").write_text("[1, 2]\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(["--instance", "keystone", "--date", "2026-11-30", "--replay", rec_dir,
+                                       "--out", tempfile.mkdtemp(), "--snapshots", tempfile.mkdtemp()]), 0)
+        (Path(rec_dir) / "recording.json").write_text(json.dumps({"instance": "keystone"}), encoding="utf-8")
 
         # Re-recording into the same folder, replaying under another instance, or recording in a git-tracked folder exits 2.
         for bad in (["--instance", "keystone", "--record", rec_dir],

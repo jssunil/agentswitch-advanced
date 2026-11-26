@@ -47,9 +47,19 @@ _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 _CHANGE_VERBS = frozenset({"move", "mark", "log", "update", "change", "edit", "modify", "set", "push",
                            "create", "delete", "remove", "cancel", "merge",
                            "send", "assign", "reassign", "schedule", "book", "close"})
+# A negated verb list ("Do not merge, delete, or change...") starts with and holds only change words,
+# so "Don't wait, move them to won" or "Never mind, mark them won" still flags the real request.
+_CHANGE_WORD = (
+    r"(?:" + "|".join(sorted(_CHANGE_VERBS, key=len, reverse=True))
+    + r"|changing|updating|deleting|removing|creating|moving|marking|logging|editing"
+    + r"|modifying|setting|pushing|cancelling|canceling|merging|sending|assigning"
+    + r"|reassigning|scheduling|booking|closing)"
+)
 _NEGATED_VERBS = re.compile(
     r"\b(?:do\s+not|don['’]?t|never|without|not\s+to)\s+(?:ever\s+)?"
-    r"[a-z]+(?:ing)?(?:\s*,\s*(?:(?:or|and)\s+)?[a-z]+(?:ing)?)*(?:\s+(?:or|and)\s+[a-z]+(?:ing)?)?\b",
+    + _CHANGE_WORD
+    + r"(?:\s*,\s*(?:(?:or|and|nor)\s+)?" + _CHANGE_WORD + r")*"
+    + r"(?:\s+(?:or|and|nor)\s+" + _CHANGE_WORD + r")?\b",
     re.IGNORECASE,
 )
 _CLAUSE_BREAK = re.compile(r"[.;:!?,\n]+|\b(?:and|then|also|but|so)\b", re.IGNORECASE)
@@ -65,6 +75,7 @@ _NOT_A_CHANGE = re.compile(
     r"^(?:update|send|brief)\s+(?:me|us|on)\b"       # asks for information: "update me on...", "update on..."
     r"|^close\s+(?:dates?|to)\b"                     # the field or distance: "close date first", "close to 10M"
     r"|^change\s+(?:in|since|from|between)\b"        # a noun phrase: "change in stage", "change since last week"
+    r"|^set\s+(?:out|aside|up\s+(?:a|the|this)\s+(?:list|brief|report|table|summary))\b"
     r"|^[a-z]+\s+of\b"                               # a noun: "change of plan", "log of calls", "set of deals"
     r"|^[a-z]+['’]s\b"                               # a name: "Mark's deals"
     r"|^(?:remove|hide|drop)\b.*\bfrom\s+(?:the|this|my)\s+(?:list|brief|report|table|summary)\b",

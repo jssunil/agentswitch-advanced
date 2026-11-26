@@ -115,7 +115,7 @@ def save_snapshot(rows, instance, as_of, folder, ranked=None, not_after=None, lo
     known = {r.id for r in stored}
     stored += [r for r in rows if r.id not in known]
     folder = Path(folder)
-    folder.mkdir(parents=True, exist_ok=True)
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)  # snapshots hold customer records
     target = folder / f"{instance}-{day.isoformat()}.json"
     if target.is_symlink():
         raise SnapshotError(f"{target.name}: a snapshot must not be a symlink")

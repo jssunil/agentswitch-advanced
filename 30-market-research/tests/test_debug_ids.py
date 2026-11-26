@@ -148,6 +148,24 @@ class Debug(unittest.TestCase):
         self.assertIn("Traceback", err.getvalue())
         self.assertNotRegex(err.getvalue(), re.escape("secret-token-123"))
 
+    def test_debug_output_is_cleaned(self):
+        # Bug hunt E2, for --debug: an error message or a value can carry server or record text.
+        debug.ENABLED = True
+        bad = "x\x1b[2J\x1b]0;owned\x07\u202ey"
+        err = io.StringIO()
+        with redirect_stderr(err):
+            try:
+                raise suite.McpError(f"server said {bad}")
+            except suite.McpError as e:
+                debug.crash(e, f"task {bad}")
+            debug.step(f"retry after {bad}")
+            debug.diff(f"d{bad}", "stage", bad, None)
+        text = err.getvalue()
+        self.assertIn("Traceback (most recent call last)", text)
+        self.assertIn("server said x[2J]0;ownedy", text)
+        for ch in ("\x1b", "\x07", "\u202e"):
+            self.assertNotIn(ch, text)
+
 
 # ---------------------------------------------------------------- platform stats and the run record (25 Nov)
 

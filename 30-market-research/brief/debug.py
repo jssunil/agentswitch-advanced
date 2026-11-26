@@ -5,7 +5,9 @@ line, and finding it means rerunning the task by hand. With it the traceback goe
 evidence line and results.json stay exactly as without it.
 
 Tokens never reach a traceback: the client keeps the token in a request header and its errors
-name settings, never their values (bug hunt E1). Locals are not printed.
+name settings, never their values (bug hunt E1). Locals are not printed. Every line printed goes
+through display_text (bug hunt E2), because an error message or a value can carry server or record
+text, and with --debug on in a harness run that text would otherwise reach the terminal.
 """
 import sys
 import traceback
@@ -20,14 +22,22 @@ def crash(error, where=""):
         return
     where = where or current
     label = f" in {where}" if where else ""
-    print(f"debug: traceback{label}:", file=sys.stderr)
-    traceback.print_exception(type(error), error, error.__traceback__, file=sys.stderr)
+    print(_clean(f"debug: traceback{label}:"), file=sys.stderr)
+    for chunk in traceback.format_exception(type(error), error, error.__traceback__):
+        for line in chunk.rstrip("\n").split("\n"):
+            print(_clean(line), file=sys.stderr)
+    sys.stderr.flush()
+
+
+def _clean(text):
+    from .values import display_text
+    return display_text(text)
 
 
 def step(text):
     """One progress line on stderr when debug is on, so a traceback can be told apart by task."""
     if ENABLED:
-        print(f"debug: {text}", file=sys.stderr, flush=True)
+        print(_clean(f"debug: {text}"), file=sys.stderr, flush=True)
 
 
 VALUE_MAX = 300      # characters of one value in a want/got line
@@ -38,7 +48,7 @@ def diff(deal_id, what, want, got):
     customer data, so they go to stderr only, never into evidence or results.json."""
     if ENABLED:
         where = f"{current} " if current else ""
-        print(f"debug: {where}{_short(deal_id)} {what}: want {_value(want)} | got {_value(got)}",
+        print(_clean(f"debug: {where}{_short(deal_id)} {what}: want {_value(want)} | got {_value(got)}"),
               file=sys.stderr, flush=True)
 
 

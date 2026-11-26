@@ -294,6 +294,12 @@ class Files(Base):
         self.assertEqual((day, loaded), (LAST_WEEK, [r]))
         self.assertEqual(loaded[0].base_value, Decimal("12345678901234567890.07"))
 
+    def test_a_new_snapshot_folder_is_owner_only(self):
+        # Review of 26 Nov: the folder holds customer records, like the files in it.
+        folder = self.folder / "snapshots"
+        changes.save_snapshot(rows(deal(1)), "keystone", LAST_WEEK, folder)
+        self.assertEqual(stat.S_IMODE(os.stat(folder).st_mode), 0o700)
+
     def test_rerun_same_day_replaces_the_file(self):
         changes.save_snapshot(rows(deal(1)), "keystone", TODAY, self.folder)
         changes.save_snapshot(rows(deal(2)), "keystone", TODAY, self.folder)
